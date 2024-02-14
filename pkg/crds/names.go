@@ -43,6 +43,7 @@ func BasicCRDs() []string {
 		"preferences.management.cattle.io",
 		"settings.management.cattle.io",
 		"navlinks.ui.cattle.io",
+		"kubeconfigs.management.cattle.io",
 	}
 }
 
@@ -232,6 +233,7 @@ var MigratedResources = map[string]bool{
 	"groups.management.cattle.io":                                     false,
 	"ipaddressclaims.ipam.cluster.x-k8s.io":                           false,
 	"kontainerdrivers.management.cattle.io":                           false,
+	"kubeconfigs.management.cattle.io":                                true,
 	"localproviders.management.cattle.io":                             false,
 	"machinedeployments.cluster.x-k8s.io":                             false,
 	"machinepools.cluster.x-k8s.io":                                   false,

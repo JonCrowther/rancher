@@ -63,6 +63,7 @@ type Interface interface {
 	Group() GroupController
 	GroupMember() GroupMemberController
 	KontainerDriver() KontainerDriverController
+	Kubeconfig() KubeconfigController
 	LocalProvider() LocalProviderController
 	ManagedChart() ManagedChartController
 	MultiClusterApp() MultiClusterAppController
@@ -235,6 +236,10 @@ func (v *version) GroupMember() GroupMemberController {
 
 func (v *version) KontainerDriver() KontainerDriverController {
 	return generic.NewNonNamespacedController[*v3.KontainerDriver, *v3.KontainerDriverList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "KontainerDriver"}, "kontainerdrivers", v.controllerFactory)
+}
+
+func (v *version) Kubeconfig() KubeconfigController {
+	return generic.NewController[*v3.Kubeconfig, *v3.KubeconfigList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "Kubeconfig"}, "kubeconfigs", true, v.controllerFactory)
 }
 
 func (v *version) LocalProvider() LocalProviderController {

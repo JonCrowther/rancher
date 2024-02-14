@@ -60,6 +60,7 @@ var (
 	GroupResourceName                                     = "groups"
 	GroupMemberResourceName                               = "groupmembers"
 	KontainerDriverResourceName                           = "kontainerdrivers"
+	KubeconfigResourceName                                = "kubeconfigs"
 	LocalProviderResourceName                             = "localproviders"
 	ManagedChartResourceName                              = "managedcharts"
 	MultiClusterAppResourceName                           = "multiclusterapps"
@@ -181,6 +182,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&GroupMemberList{},
 		&KontainerDriver{},
 		&KontainerDriverList{},
+		&Kubeconfig{},
+		&KubeconfigList{},
 		&LocalProvider{},
 		&LocalProviderList{},
 		&ManagedChart{},

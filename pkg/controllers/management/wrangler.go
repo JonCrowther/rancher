@@ -11,6 +11,7 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/management/feature"
 	"github.com/rancher/rancher/pkg/controllers/management/gke"
 	"github.com/rancher/rancher/pkg/controllers/management/k3sbasedupgrade"
+	"github.com/rancher/rancher/pkg/controllers/management/kubeconfig"
 	"github.com/rancher/rancher/pkg/features"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/rancher/rancher/pkg/wrangler"
@@ -22,6 +23,7 @@ func RegisterWrangler(ctx context.Context, wranglerContext *wrangler.Context, ma
 	eks.Register(ctx, wranglerContext, management)
 	gke.Register(ctx, wranglerContext, management)
 	clusterupstreamrefresher.Register(ctx, wranglerContext)
+	kubeconfig.Register(ctx, wranglerContext.Mgmt.Kubeconfig())
 
 	feature.Register(ctx, wranglerContext)
 
