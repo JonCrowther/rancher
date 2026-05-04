@@ -508,14 +508,18 @@ func (p *RTBTestSuite) waitForResourceQuota(client *rancher.Client, nsName strin
 func (p *RTBTestSuite) waitForProjectUsedLimit(client *rancher.Client, projectID, field, value string) {
 	p.Require().Eventually(func() bool {
 		proj, err := client.Management.Project.ByID(projectID)
-		if err != nil || proj.ResourceQuota == nil || proj.ResourceQuota.UsedLimit == nil {
+		if err != nil || proj.ResourceQuota == nil {
 			return false
+		}
+		if proj.ResourceQuota.UsedLimit == nil {
+			return value == "0" || value == ""
 		}
 		switch field {
 		case "pods":
 			return proj.ResourceQuota.UsedLimit.Pods == value
 		case "services":
-			return proj.ResourceQuota.UsedLimit.Services == value
+			actual := proj.ResourceQuota.UsedLimit.Services
+			return actual == value || (value == "0" && actual == "")
 		}
 		return false
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.%s=%s", field, value)
@@ -728,6 +732,24 @@ func (p *RTBTestSuite) TestProjectQuotaAddRemoveFields() {
 		},
 	})
 	p.Require().NoError(err)
+
+	// Wait for the controller to remove the services field from each namespace's ResourceQuota.
+	downstreamClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
+	p.Require().NoError(err)
+	rqGVR := corev1.SchemeGroupVersion.WithResource("resourcequotas")
+	for _, nsName := range []string{ns1.Name, ns2.Name} {
+		ns := nsName
+		p.Require().Eventually(func() bool {
+			rqList, listErr := downstreamClient.Resource(rqGVR).Namespace(ns).List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "resourcequota.management.cattle.io/default-resource-quota=true",
+			})
+			if listErr != nil || len(rqList.Items) == 0 {
+				return false
+			}
+			_, found, _ := unstructured.NestedString(rqList.Items[0].Object, "spec", "hard", "services")
+			return !found
+		}, 2*time.Minute, 2*time.Second, "waiting for services to be removed from ResourceQuota in namespace %s", ns)
+	}
 
 	// After removing services, usedLimit.services should drop to 0.
 	p.waitForProjectUsedLimit(client, project.ID, "services", "0")
