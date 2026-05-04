@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/rancher/shepherd/clients/rancher"
 	"github.com/rancher/shepherd/pkg/session"
 	"github.com/stretchr/testify/suite"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 )
 
@@ -28,31 +30,42 @@ func (s *K8sProxyTestSuite) SetupSuite() {
 	s.Require().NoError(err)
 	s.client = client
 
-	s.downstreamClusterID = s.findDownstreamClusterID()
+	clusterID, err := s.findDownstreamClusterID()
+	s.Require().NoError(err)
+	s.downstreamClusterID = clusterID
 }
 
 func (s *K8sProxyTestSuite) TearDownSuite() {
 	s.session.Cleanup()
 }
 
-// findDownstreamClusterID lists management clusters and returns the ID of the first
-// active downstream cluster that has a Ready condition with status True. Returns an
-// empty string if none is found.
-func (s *K8sProxyTestSuite) findDownstreamClusterID() string {
-	clusterList, err := s.client.Management.Cluster.ListAll(nil)
-	s.Require().NoError(err)
-
-	for _, cluster := range clusterList.Data {
-		if cluster.ID == "local" || cluster.State != "active" {
-			continue
+// findDownstreamClusterID polls the management API until an active downstream cluster
+// with a Ready condition is found, then returns its ID. Returns an error if no such
+// cluster is found within the timeout.
+func (s *K8sProxyTestSuite) findDownstreamClusterID() (string, error) {
+	var clusterID string
+	err := wait.PollUntilContextTimeout(context.TODO(), 5*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		clusterList, err := s.client.Management.Cluster.ListAll(nil)
+		if err != nil {
+			return false, err
 		}
-		for _, condition := range cluster.Conditions {
-			if condition.Type == "Ready" && condition.Status == "True" {
-				return cluster.ID
+		for _, cluster := range clusterList.Data {
+			if cluster.ID == "local" || cluster.State != "active" {
+				continue
+			}
+			for _, condition := range cluster.Conditions {
+				if condition.Type == "Ready" && condition.Status == "True" {
+					clusterID = cluster.ID
+					return true, nil
+				}
 			}
 		}
+		return false, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("no ready downstream cluster found within timeout: %w", err)
 	}
-	return ""
+	return clusterID, nil
 }
 
 func (s *K8sProxyTestSuite) httpClient() *http.Client {
@@ -62,7 +75,7 @@ func (s *K8sProxyTestSuite) httpClient() *http.Client {
 }
 
 func (s *K8sProxyTestSuite) TestK8sProxyFetchesNamespacesFromLocalCluster() {
-	url := fmt.Sprintf("https://%s/k8s/proxy/local/api/v1/namespaces", s.client.RancherConfig.Host)
+	url := fmt.Sprintf("https://%s/k8s/proxy/local/api/v1/namespaces", s.client.WranglerContext.RESTConfig.Host)
 
 	httpClient := s.httpClient()
 	resp, err := httpClient.Get(url)
@@ -79,11 +92,7 @@ func (s *K8sProxyTestSuite) TestK8sProxyFetchesNamespacesFromLocalCluster() {
 }
 
 func (s *K8sProxyTestSuite) TestK8sProxyFetchesNamespacesFromDownstreamCluster() {
-	if s.downstreamClusterID == "" {
-		s.T().Skip("no ready downstream cluster available for this test")
-	}
-
-	url := fmt.Sprintf("https://%s/k8s/proxy/%s/api/v1/namespaces", s.client.RancherConfig.Host, s.downstreamClusterID)
+	url := fmt.Sprintf("https://%s/k8s/proxy/%s/api/v1/namespaces", s.client.WranglerContext.RESTConfig.Host, s.downstreamClusterID)
 	httpClient := s.httpClient()
 
 	// Wrap in Eventually to handle transient proxy unavailability against a downstream cluster.
@@ -111,11 +120,7 @@ func (s *K8sProxyTestSuite) TestK8sProxyFetchesNamespacesFromDownstreamCluster()
 }
 
 func (s *K8sProxyTestSuite) TestProxyK8sV1PathReturnsNotFound() {
-	if s.downstreamClusterID == "" {
-		s.T().Skip("no ready downstream cluster available for this test")
-	}
-
-	url := fmt.Sprintf("https://%s/k8s/proxy/%s/v1", s.client.RancherConfig.Host, s.downstreamClusterID)
+	url := fmt.Sprintf("https://%s/k8s/proxy/%s/v1", s.client.WranglerContext.RESTConfig.Host, s.downstreamClusterID)
 	httpClient := s.httpClient()
 
 	resp, err := httpClient.Get(url)
