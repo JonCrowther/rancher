@@ -19,12 +19,12 @@ import (
 )
 
 const (
-	prtbByUsernameIndex             = "auth.management.cattle.io/prtb-by-username"
-	crtbByUsernameIndex             = "auth.management.cattle.io/crtb-by-username"
-	rbByPRTBOwnerReferenceIndex     = "auth.management.cattle.io/rb-by-prtb-owner-reference"
-	rbByCRTBOwnerReferenceIndex     = "auth.management.cattle.io/rb-by-crtb-owner-reference"
-	getPRTBsByRoleTemplateNameIndex = "auth.management.cattle.io/prtb-by-roletemplate-name"
-	getCRTBsByRoleTemplateNameIndex = "auth.management.cattle.io/crtb-by-roletemplate-name"
+	prtbByUsernameIndex         = "auth.management.cattle.io/prtb-by-username"
+	crtbByUsernameIndex         = "auth.management.cattle.io/crtb-by-username"
+	rbByPRTBOwnerReferenceIndex = "auth.management.cattle.io/rb-by-prtb-owner-reference"
+	rbByCRTBOwnerReferenceIndex = "auth.management.cattle.io/rb-by-crtb-owner-reference"
+	prtbByRoleTemplateNameIndex = "auth.management.cattle.io/prtb-by-roletemplate-name"
+	crtbByRoleTemplateNameIndex = "auth.management.cattle.io/crtb-by-roletemplate-name"
 
 	roleTemplateChangeHandler = "mgmt-roletemplate-change-handler"
 	roleTemplateRemoveHandler = "mgmt-roletemplate-remove-handler"
@@ -45,8 +45,8 @@ func RegisterIndexers(wranglerContext *wrangler.Context) {
 	wranglerContext.Mgmt.ProjectRoleTemplateBinding().Cache().AddIndexer(prtbByUsernameIndex, getPRTBByUsername)
 	wranglerContext.RBAC.RoleBinding().Cache().AddIndexer(rbByPRTBOwnerReferenceIndex, getRBByPRTBOwnerReference)
 	wranglerContext.RBAC.RoleBinding().Cache().AddIndexer(rbByCRTBOwnerReferenceIndex, getRBByCRTBOwnerReference)
-	wranglerContext.Mgmt.ProjectRoleTemplateBinding().Cache().AddIndexer(getPRTBsByRoleTemplateNameIndex, getPRTBByRoleTemplateName)
-	wranglerContext.Mgmt.ClusterRoleTemplateBinding().Cache().AddIndexer(getCRTBsByRoleTemplateNameIndex, getCRTBByRoleTemplateName)
+	wranglerContext.Mgmt.ProjectRoleTemplateBinding().Cache().AddIndexer(prtbByRoleTemplateNameIndex, getPRTBByRoleTemplateName)
+	wranglerContext.Mgmt.ClusterRoleTemplateBinding().Cache().AddIndexer(crtbByRoleTemplateNameIndex, getCRTBByRoleTemplateName)
 }
 
 func Register(ctx context.Context, management *config.ManagementContext, clusterManager *clustermanager.Manager) {
@@ -107,9 +107,9 @@ func clusterRoleEnqueue(obj runtime.Object, lookupKeys func(owner string) ([]rel
 // clusterRoleEnqueuePRTBs enqueues PRTBs when the aggregation ClusterRole owned by the PRTB is changed.
 func (r *roletemplateEnqueuer) clusterRoleEnqueuePRTBs(_, _ string, obj runtime.Object) ([]relatedresource.Key, error) {
 	return clusterRoleEnqueue(obj, func(owner string) ([]relatedresource.Key, error) {
-		prtbs, err := r.prtbCache.GetByIndex(getPRTBsByRoleTemplateNameIndex, owner)
+		prtbs, err := r.prtbCache.GetByIndex(prtbByRoleTemplateNameIndex, owner)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list PRTBs: %w", err)
+			return nil, fmt.Errorf("failed to list PRTBs for role template %s: %w", owner, err)
 		}
 		var keys []relatedresource.Key
 		for _, prtb := range prtbs {
@@ -125,9 +125,9 @@ func (r *roletemplateEnqueuer) clusterRoleEnqueuePRTBs(_, _ string, obj runtime.
 // clusterRoleEnqueueCRTBs enqueues CRTBs when the aggregation ClusterRole owned by the CRTB is changed.
 func (r *roletemplateEnqueuer) clusterRoleEnqueueCRTBs(_, _ string, obj runtime.Object) ([]relatedresource.Key, error) {
 	return clusterRoleEnqueue(obj, func(owner string) ([]relatedresource.Key, error) {
-		crtbs, err := r.crtbCache.GetByIndex(getCRTBsByRoleTemplateNameIndex, owner)
+		crtbs, err := r.crtbCache.GetByIndex(crtbByRoleTemplateNameIndex, owner)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list CRTBs: %w", err)
+			return nil, fmt.Errorf("failed to list CRTBs for role template %s: %w", owner, err)
 		}
 		var keys []relatedresource.Key
 		for _, crtb := range crtbs {

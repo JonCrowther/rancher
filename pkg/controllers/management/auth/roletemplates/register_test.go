@@ -401,7 +401,7 @@ func TestClusterRoleEnqueuePRTBs(t *testing.T) {
 			obj:  aggregationClusterRole,
 			prtbCache: func(ctrl *gomock.Controller) mgmtv3.ProjectRoleTemplateBindingCache {
 				m := fake.NewMockCacheInterface[*v3.ProjectRoleTemplateBinding](ctrl)
-				m.EXPECT().GetByIndex(getPRTBsByRoleTemplateNameIndex, "rt-1").Return([]*v3.ProjectRoleTemplateBinding{projectRoleTemplateBinding}, nil)
+				m.EXPECT().GetByIndex(prtbByRoleTemplateNameIndex, "rt-1").Return([]*v3.ProjectRoleTemplateBinding{projectRoleTemplateBinding}, nil)
 				return m
 			},
 			want: []relatedresource.Key{
@@ -413,7 +413,7 @@ func TestClusterRoleEnqueuePRTBs(t *testing.T) {
 			obj:  aggregationClusterRole,
 			prtbCache: func(ctrl *gomock.Controller) mgmtv3.ProjectRoleTemplateBindingCache {
 				m := fake.NewMockCacheInterface[*v3.ProjectRoleTemplateBinding](ctrl)
-				m.EXPECT().GetByIndex(getPRTBsByRoleTemplateNameIndex, "rt-1").Return(nil, errors.New("prtb cache error"))
+				m.EXPECT().GetByIndex(prtbByRoleTemplateNameIndex, "rt-1").Return(nil, errors.New("prtb cache error"))
 				return m
 			},
 			wantErr: true,
@@ -427,8 +427,6 @@ func TestClusterRoleEnqueuePRTBs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			r := &roletemplateEnqueuer{}
 			if tt.prtbCache != nil {
 				r.prtbCache = tt.prtbCache(ctrl)
@@ -470,7 +468,7 @@ func TestClusterRoleEnqueueCRTBs(t *testing.T) {
 			obj:  aggregationClusterRole,
 			crtbCache: func(ctrl *gomock.Controller) mgmtv3.ClusterRoleTemplateBindingCache {
 				m := fake.NewMockCacheInterface[*v3.ClusterRoleTemplateBinding](ctrl)
-				m.EXPECT().GetByIndex(getCRTBsByRoleTemplateNameIndex, "rt-1").Return([]*v3.ClusterRoleTemplateBinding{clusterRoleTemplateBinding}, nil)
+				m.EXPECT().GetByIndex(crtbByRoleTemplateNameIndex, "rt-1").Return([]*v3.ClusterRoleTemplateBinding{clusterRoleTemplateBinding}, nil)
 				return m
 			},
 			want: []relatedresource.Key{
@@ -482,7 +480,7 @@ func TestClusterRoleEnqueueCRTBs(t *testing.T) {
 			obj:  aggregationClusterRole,
 			crtbCache: func(ctrl *gomock.Controller) mgmtv3.ClusterRoleTemplateBindingCache {
 				m := fake.NewMockCacheInterface[*v3.ClusterRoleTemplateBinding](ctrl)
-				m.EXPECT().GetByIndex(getCRTBsByRoleTemplateNameIndex, "rt-1").Return(nil, errors.New("crtb cache error"))
+				m.EXPECT().GetByIndex(crtbByRoleTemplateNameIndex, "rt-1").Return(nil, errors.New("crtb cache error"))
 				return m
 			},
 			wantErr: true,
@@ -496,8 +494,6 @@ func TestClusterRoleEnqueueCRTBs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			r := &roletemplateEnqueuer{}
 			if tt.crtbCache != nil {
 				r.crtbCache = tt.crtbCache(ctrl)
