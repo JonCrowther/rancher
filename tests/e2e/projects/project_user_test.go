@@ -1,131 +1,88 @@
-package integration
+package projects
 
 import (
-	"testing"
-
 	"github.com/rancher/rancher/tests/e2e/actions/namespaces"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	extauthz "github.com/rancher/shepherd/extensions/kubeapi/authorization"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
-	"github.com/rancher/shepherd/pkg/api/scheme"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
+	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 	authzv1 "k8s.io/api/authorization/v1"
 )
 
-func init() {
-	authzv1.SchemeBuilder.AddToScheme(scheme.Scheme.Scheme)
-}
-
-const (
-	namespaceName = "testnamespace"
-)
-
-type ProjectUserTestSuite struct {
-	suite.Suite
-	testUser *management.User
-	client   *rancher.Client
-	project  *management.Project
-	session  *session.Session
-}
-
-func (p *ProjectUserTestSuite) TearDownSuite() {
-	p.session.Cleanup()
-}
-
-func (p *ProjectUserTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	p.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	require.NoError(p.T(), err)
-
-	p.client = client
-
-	projectConfig := &management.Project{
-		ClusterID: "local",
-		Name:      "TestProject",
-	}
-
-	testProject, err := client.Management.Project.Create(projectConfig)
-	require.NoError(p.T(), err)
-
-	p.project = testProject
+// createProjectAndUser creates a project in the cluster under test and a user with the standard
+// "user" global role, returned with its password set so the caller can act as it.
+func (s *ProjectsTestSuite) createProjectAndUser(client *rancher.Client) (*management.Project, *management.User) {
+	project, err := client.Management.Project.Create(&management.Project{
+		ClusterID: s.clusterID,
+		Name:      namegen.AppendRandomString("testproject-"),
+	})
+	s.Require().NoError(err)
 
 	enabled := true
-	var testuser = "testuser"
-	var testpassword = password.GenerateUserPassword("testpass-")
-	user := &management.User{
-		Username: testuser,
-		Password: testpassword,
-		Name:     testuser,
+	pw := password.GenerateUserPassword("testpass-")
+	user, err := users.CreateUserWithRole(client, &management.User{
+		Username: namegen.AppendRandomString("testuser-"),
+		Password: pw,
+		Name:     "testuser",
 		Enabled:  &enabled,
-	}
-
-	newUser, err := users.CreateUserWithRole(client, user, "user")
-	require.NoError(p.T(), err)
-	newUser.Password = user.Password
-	p.testUser = newUser
+	}, "user")
+	s.Require().NoError(err)
+	user.Password = pw
+	return project, user
 }
 
-func (p *ProjectUserTestSuite) TestCreateNamespaceProjectMember() {
-	subSession := p.session.NewSession()
-	defer subSession.Cleanup()
+// TestCreateNamespaceProjectMember asserts that a user bound to the project-member role can create
+// a namespace in the project.
+func (s *ProjectsTestSuite) TestCreateNamespaceProjectMember() {
+	client := s.newSubSession()
+	project, user := s.createProjectAndUser(client)
 
-	client, err := p.client.WithSession(subSession)
-	require.NoError(p.T(), err)
-
-	_, err = client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
-		ProjectID:       p.project.ID,
-		UserPrincipalID: p.testUser.PrincipalIDs[0],
+	_, err := client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
+		ProjectID:       project.ID,
+		UserPrincipalID: user.PrincipalIDs[0],
 		RoleTemplateID:  "project-member",
 	})
-	require.NoError(p.T(), err)
+	s.Require().NoError(err)
 
-	testUser, err := client.AsUser(p.testUser)
-	require.NoError(p.T(), err)
+	userClient, err := client.AsUser(user)
+	s.Require().NoError(err)
 
-	err = extauthz.WaitForAllowed(testUser, p.project.ClusterID, []*authzv1.ResourceAttributes{
+	err = extauthz.WaitForAllowed(userClient, project.ClusterID, []*authzv1.ResourceAttributes{
 		{Verb: "create", Resource: "namespaces"},
 	})
-	require.NoError(p.T(), err)
+	s.Require().NoError(err)
 
-	createdNamespace, err := namespaces.CreateNamespace(testUser, namespaceName, "{}", map[string]string{}, map[string]string{}, p.project)
-	assert.NoError(p.T(), err)
-	assert.Equal(p.T(), namespaceName, createdNamespace.Name)
+	namespaceName := namegen.AppendRandomString("testns-")
+	createdNamespace, err := namespaces.CreateNamespace(userClient, namespaceName, "{}", map[string]string{}, map[string]string{}, project)
+	s.Require().NoError(err)
+	s.Equal(namespaceName, createdNamespace.Name)
 }
 
-func (p *ProjectUserTestSuite) TestCreateNamespaceProjectOwner() {
-	subSession := p.session.NewSession()
-	defer subSession.Cleanup()
+// TestCreateNamespaceProjectOwner asserts that a user bound to the project-owner role can create a
+// namespace in the project.
+func (s *ProjectsTestSuite) TestCreateNamespaceProjectOwner() {
+	client := s.newSubSession()
+	project, user := s.createProjectAndUser(client)
 
-	client, err := p.client.WithSession(subSession)
-	require.NoError(p.T(), err)
-
-	_, err = client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
-		ProjectID:       p.project.ID,
-		UserPrincipalID: p.testUser.PrincipalIDs[0],
+	_, err := client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
+		ProjectID:       project.ID,
+		UserPrincipalID: user.PrincipalIDs[0],
 		RoleTemplateID:  "project-owner",
 	})
-	require.NoError(p.T(), err)
+	s.Require().NoError(err)
 
-	testUser, err := client.AsUser(p.testUser)
-	require.NoError(p.T(), err)
+	userClient, err := client.AsUser(user)
+	s.Require().NoError(err)
 
-	err = extauthz.WaitForAllowed(testUser, p.project.ClusterID, []*authzv1.ResourceAttributes{
+	err = extauthz.WaitForAllowed(userClient, project.ClusterID, []*authzv1.ResourceAttributes{
 		{Verb: "create", Resource: "namespaces"},
 	})
-	require.NoError(p.T(), err)
+	s.Require().NoError(err)
 
-	createdNamespace, err := namespaces.CreateNamespace(testUser, namespaceName, "{}", map[string]string{}, map[string]string{}, p.project)
-	assert.NoError(p.T(), err)
-	assert.Equal(p.T(), namespaceName, createdNamespace.Name)
-}
-
-func TestProjectUserTestSuite(t *testing.T) {
-	suite.Run(t, new(ProjectUserTestSuite))
+	namespaceName := namegen.AppendRandomString("testns-")
+	createdNamespace, err := namespaces.CreateNamespace(userClient, namespaceName, "{}", map[string]string{}, map[string]string{}, project)
+	s.Require().NoError(err)
+	s.Equal(namespaceName, createdNamespace.Name)
 }

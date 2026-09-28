@@ -23,7 +23,6 @@ import (
 	v1 "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
 	"github.com/rancher/rancher/pkg/catalogv2/oci"
 	"github.com/rancher/rancher/pkg/controllers/dashboard/helm"
-	"github.com/rancher/rancher/tests/e2e/defaults"
 	"github.com/rancher/shepherd/clients/rancher/catalog"
 	stevev1 "github.com/rancher/shepherd/clients/rancher/v1"
 	"github.com/rancher/shepherd/pkg/api/steve/catalog/types"
@@ -61,8 +60,9 @@ const (
 )
 
 var (
-	PollInterval = time.Duration(500 * time.Millisecond)
-	PollTimeout  = time.Duration(5 * time.Minute)
+	PollInterval        = time.Duration(500 * time.Millisecond)
+	PollTimeout         = time.Duration(5 * time.Minute)
+	WatchTimeoutSeconds = int64(600) // 10 minutes.
 )
 
 type RepoType int64
@@ -732,7 +732,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepoChartInstallation() {
 	// wait for chart to be full deployed
 	watchAppInterface, err := c.catalogClient.Apps("default").Watch(context.TODO(), metav1.ListOptions{
 		FieldSelector:  "metadata.name=" + "testreleasename",
-		TimeoutSeconds: &defaults.WatchTimeoutSeconds,
+		TimeoutSeconds: &WatchTimeoutSeconds,
 	})
 	require.NoError(c.T(), err)
 
@@ -767,7 +767,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepoChartInstallation() {
 
 	watchAppInterface, err = c.catalogClient.Apps("default").Watch(context.TODO(), metav1.ListOptions{
 		FieldSelector:  "metadata.name=" + "testreleasename",
-		TimeoutSeconds: &defaults.WatchTimeoutSeconds,
+		TimeoutSeconds: &WatchTimeoutSeconds,
 	})
 	require.NoError(c.T(), err)
 

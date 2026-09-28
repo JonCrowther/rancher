@@ -25,7 +25,7 @@ func init() {
 }
 
 // RBACTestSuite covers Rancher's RBAC behavior: role templates and their bindings, global roles,
-// default role assignment, project access and quotas, impersonation, and features. Its tests are
+// default role assignment, project access, impersonation, and features. Its tests are
 // split across the files in this package by topic; this file holds only the shared setup and helpers.
 type RBACTestSuite struct {
 	suite.Suite

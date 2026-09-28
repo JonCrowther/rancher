@@ -2,6 +2,7 @@ package clusters
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,7 +67,9 @@ func (s *ClustersTestSuite) createStorageClassDirect(client *rancher.Client, nam
 		},
 	}
 
-	_, err = dynamicClient.Resource(storageClassGVR).Create(s.T().Context(), obj, metav1.CreateOptions{})
+	// Namespace("") on this cluster-scoped resource is what makes the session track the create: the
+	// session's dynamic client only wraps Create on the interface Namespace returns.
+	_, err = dynamicClient.Resource(storageClassGVR).Namespace("").Create(s.T().Context(), obj, metav1.CreateOptions{})
 	s.Require().NoError(err)
 }
 
@@ -89,7 +92,8 @@ func (s *ClustersTestSuite) createStorageClassNorman(client *rancher.Client, htt
 
 	t := s.T()
 	t.Cleanup(func() {
-		err := dynamicClient.Resource(storageClassGVR).Delete(t.Context(), scName, metav1.DeleteOptions{})
+		// Not t.Context(): it's canceled before cleanup functions run.
+		err := dynamicClient.Resource(storageClassGVR).Delete(context.Background(), scName, metav1.DeleteOptions{})
 		if !apierrors.IsNotFound(err) {
 			assert.NoError(t, err, "failed to delete StorageClass %s", scName)
 		}

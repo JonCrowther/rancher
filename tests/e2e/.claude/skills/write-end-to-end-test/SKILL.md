@@ -135,7 +135,7 @@ A suite is not always confined to the file that declares its struct: `rbac/` is 
 (`RBACTestSuite`, declared in `rbac_suite_test.go`) with its test methods spread across topic files
 (`default_roles_test.go`, `etcdbackups_test.go`, `features_test.go`, `global_roles_test.go`,
 `global_role_bindings_test.go`, `impersonation_test.go`, `projects_test.go`,
-`project_quotas_test.go`, `rtbs_test.go`). Most other directories are simpler —
+`rtbs_test.go`). Most other directories are simpler —
 one file, one suite. Either is valid; check for sibling files adding methods to the same struct
 before assuming a directory's suite is confined to one file.
 
@@ -194,6 +194,11 @@ The session tracks every direct create — Norman `client.Management.X.Create(..
 through the dynamic client from `client.GetDownStreamClusterClient(...)` alike — and its delete
 ignores 404s. So a manual `T().Cleanup` that deletes a directly-created resource is redundant; don't
 add one. `client.AsUser(...)` shares the parent client's session.
+
+One catch: the session's dynamic client only tracks `Create` on the interface `Namespace(...)`
+returns. For a cluster-scoped resource, call `Resource(gvr).Namespace("").Create(...)`; a bare
+`Resource(gvr).Create(...)` is untracked and leaks. Also, in a manual cleanup, don't pass
+`t.Context()` — it's canceled before cleanup functions run; use `context.Background()`.
 
 ### Reporting errors from a manual cleanup
 
@@ -318,7 +323,7 @@ func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 When a check needs polling, the helper should be a non-asserting getter that returns the observed
 value and an error, and the test writes its own `Eventually` around it. The pass condition then
 stays visible in the test (e.g. `resourceQuotaHard` and `projectUsedLimit` in
-`rbac/project_quotas_test.go`):
+`projects/project_quotas_test.go`):
 
 ```go
 p.Require().Eventually(func() bool {
@@ -358,7 +363,7 @@ without jumping between files.
    only (e.g. a helper closure used twice within a single test and nowhere else).
 3. **File-local helper** — setup/action (never assertion) shared by several tests *in the same topic
    file* and nowhere else (e.g. `setClusterCreatorDefaults` in `rbac/default_roles_test.go`,
-   `resourceQuotaHard` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
+   `resourceQuotaHard` in `projects/project_quotas_test.go`). Defined at the top of that topic file,
    not in the suite file.
 4. **Suite-level helper** — setup/action (never assertion) shared across tests in *more than one*
    topic file (e.g. `createUser`, `createNamespace`), defined in the suite's `_suite_test.go` file.

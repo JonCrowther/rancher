@@ -1,4 +1,4 @@
-package rbac
+package projects
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	extnamespaces "github.com/rancher/rancher/tests/e2e/actions/kubeapi/namespaces"
@@ -13,6 +14,7 @@ import (
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/pkg/clientbase"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,24 +23,28 @@ import (
 // createNamespaceWithQuota creates a namespace in the given project with an optional
 // resource quota annotation. If quota is nil, no resource quota annotation is set and
 // the project's namespaceDefaultResourceQuota will apply.
-func (p *RBACTestSuite) createNamespaceWithQuota(client *rancher.Client, projName string, quota map[string]string) *corev1.Namespace {
+func (s *ProjectsTestSuite) createNamespaceWithQuota(client *rancher.Client, project *management.Project, quota map[string]string) *corev1.Namespace {
+	_, projName, found := strings.Cut(project.ID, ":")
+	s.Require().True(found, "invalid project ID %q, expected format <cluster>:<project>", project.ID)
+
 	annotations := map[string]string{}
 	if quota != nil {
 		q := map[string]any{"limit": quota}
 		b, err := json.Marshal(q)
-		p.Require().NoError(err)
+		s.Require().NoError(err)
 		annotations["field.cattle.io/resourceQuota"] = string(b)
 	}
-	ns, err := extnamespaces.CreateNamespace(client, p.downstreamClusterID, projName, namegen.AppendRandomString("testns-"), "{}", map[string]string{}, annotations)
-	p.Require().NoError(err)
+	ns, err := extnamespaces.CreateNamespace(client, s.clusterID, projName, namegen.AppendRandomString("testns-"), "{}", map[string]string{}, annotations)
+	s.Require().NoError(err)
 	return ns
 }
 
 // resourceQuotaHard returns spec.hard of the ResourceQuota that the Rancher quota controller
 // creates in the given namespace (identified by the default-resource-quota label). It returns a
-// nil map if the controller hasn't created the ResourceQuota yet.
-func (p *RBACTestSuite) resourceQuotaHard(client *rancher.Client, nsName string) (map[string]string, error) {
-	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
+// nil map if the controller hasn't created the ResourceQuota yet (or has deleted it), and an error
+// if there is more than one.
+func (s *ProjectsTestSuite) resourceQuotaHard(client *rancher.Client, nsName string) (map[string]string, error) {
+	dynamicClient, err := client.GetDownStreamClusterClient(s.clusterID)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +55,9 @@ func (p *RBACTestSuite) resourceQuotaHard(client *rancher.Client, nsName string)
 	})
 	if err != nil || len(rqList.Items) == 0 {
 		return nil, err
+	}
+	if len(rqList.Items) > 1 {
+		return nil, fmt.Errorf("expected at most 1 ResourceQuota in namespace %s, got %d", nsName, len(rqList.Items))
 	}
 
 	specRaw, found, err := unstructured.NestedMap(rqList.Items[0].Object, "spec", "hard")
@@ -64,7 +73,7 @@ func (p *RBACTestSuite) resourceQuotaHard(client *rancher.Client, nsName string)
 
 // projectUsedLimit returns the project's usedLimit for the given field ("pods" or "services").
 // An unset usedLimit is reported as "0".
-func (p *RBACTestSuite) projectUsedLimit(client *rancher.Client, projectID, field string) (string, error) {
+func (s *ProjectsTestSuite) projectUsedLimit(client *rancher.Client, projectID, field string) (string, error) {
 	proj, err := client.Management.Project.ByID(projectID)
 	if err != nil {
 		return "", err
@@ -93,8 +102,8 @@ func (p *RBACTestSuite) projectUsedLimit(client *rancher.Client, projectID, fiel
 
 // TestProjectResourceQuotaFields tests that creating a project with a resource quota
 // and namespace default resource quota correctly stores those fields.
-func (p *RBACTestSuite) TestProjectResourceQuotaFields() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectResourceQuotaFields() {
+	client := s.newSubSession()
 
 	pq := &management.ProjectResourceQuota{
 		Limit: &management.ResourceQuotaLimit{Pods: "100"},
@@ -105,16 +114,16 @@ func (p *RBACTestSuite) TestProjectResourceQuotaFields() {
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:                          namegen.AppendRandomString("test-"),
-		ClusterID:                     p.downstreamClusterID,
+		ClusterID:                     s.clusterID,
 		ResourceQuota:                 pq,
 		NamespaceDefaultResourceQuota: nsq,
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
-	p.Require().NotNil(project.ResourceQuota)
-	p.Require().Equal("100", project.ResourceQuota.Limit.Pods)
-	p.Require().NotNil(project.NamespaceDefaultResourceQuota)
-	p.Require().Equal("100", project.NamespaceDefaultResourceQuota.Limit.Pods)
+	s.Require().NotNil(project.ResourceQuota)
+	s.Require().Equal("100", project.ResourceQuota.Limit.Pods)
+	s.Require().NotNil(project.NamespaceDefaultResourceQuota)
+	s.Require().Equal("100", project.NamespaceDefaultResourceQuota.Limit.Pods)
 }
 
 // TestProjectQuotaAPIValidation tests project-level resource quota API validation:
@@ -122,8 +131,8 @@ func (p *RBACTestSuite) TestProjectResourceQuotaFields() {
 // - resourceQuota must be provided when namespaceDefaultResourceQuota is set
 // - namespace default quota fields must not exceed project quota
 // - namespace default quota must have all fields defined on the project quota
-func (p *RBACTestSuite) TestProjectQuotaAPIValidation() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectQuotaAPIValidation() {
+	client := s.newSubSession()
 
 	pq := &management.ProjectResourceQuota{
 		Limit: &management.ResourceQuotaLimit{Pods: "100"},
@@ -137,32 +146,32 @@ func (p *RBACTestSuite) TestProjectQuotaAPIValidation() {
 	// resourceQuota without namespaceDefaultResourceQuota should fail (422).
 	_, err := client.Management.Project.Create(&management.Project{
 		Name:          namegen.AppendRandomString("test-"),
-		ClusterID:     p.downstreamClusterID,
+		ClusterID:     s.clusterID,
 		ResourceQuota: pq,
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 
 	// namespaceDefaultResourceQuota without resourceQuota should fail (422).
 	_, err = client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		NamespaceDefaultResourceQuota: &management.NamespaceResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 
 	// Namespace default quota exceeding project quota should fail (422).
 	_, err = client.Management.Project.Create(&management.Project{
 		Name:                          namegen.AppendRandomString("test-"),
-		ClusterID:                     p.downstreamClusterID,
+		ClusterID:                     s.clusterID,
 		ResourceQuota:                 pq,
 		NamespaceDefaultResourceQuota: nsqLarge,
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 
 	// Namespace default quota missing fields defined on project quota should fail (422).
 	pqMulti := &management.ProjectResourceQuota{
@@ -174,22 +183,22 @@ func (p *RBACTestSuite) TestProjectQuotaAPIValidation() {
 
 	proj, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	_, err = client.Management.Project.Update(proj, map[string]any{
 		"resourceQuota":                 pqMulti,
 		"namespaceDefaultResourceQuota": nsqIncomplete,
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 }
 
 // TestProjectContainerDefaultResourceLimit tests that creating a project with a
 // containerDefaultResourceLimit correctly stores the limit, and that it can be cleared.
-func (p *RBACTestSuite) TestProjectContainerDefaultResourceLimit() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectContainerDefaultResourceLimit() {
+	client := s.newSubSession()
 
 	pq := &management.ProjectResourceQuota{
 		Limit: &management.ResourceQuotaLimit{Pods: "100"},
@@ -206,32 +215,33 @@ func (p *RBACTestSuite) TestProjectContainerDefaultResourceLimit() {
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:                          namegen.AppendRandomString("test-"),
-		ClusterID:                     p.downstreamClusterID,
+		ClusterID:                     s.clusterID,
 		ResourceQuota:                 pq,
 		NamespaceDefaultResourceQuota: nsq,
 		ContainerDefaultResourceLimit: lmt,
 	})
-	p.Require().NoError(err)
-	p.Require().NotNil(project.ResourceQuota)
-	p.Require().NotNil(project.ContainerDefaultResourceLimit)
+	s.Require().NoError(err)
+	s.Require().NotNil(project.ResourceQuota)
+	s.Require().NotNil(project.ContainerDefaultResourceLimit)
 
 	// Clear the container limit.
 	updated, err := client.Management.Project.Update(project, map[string]any{
 		"containerDefaultResourceLimit": nil,
 	})
-	p.Require().NoError(err)
-	p.Require().Nil(updated.ContainerDefaultResourceLimit)
+	s.Require().NoError(err)
+	s.Require().Nil(updated.ContainerDefaultResourceLimit)
 }
 
 // TestNamespaceResourceQuotaCreated tests that when a namespace is created in a project
 // with an explicit resource quota annotation, the Rancher controller creates a k8s
-// ResourceQuota object in the namespace with the requested limits.
-func (p *RBACTestSuite) TestNamespaceResourceQuotaCreated() {
-	client := p.newSubSession()
+// ResourceQuota object in the namespace with the requested limits, dropping any limit the
+// project quota doesn't define.
+func (s *ProjectsTestSuite) TestNamespaceResourceQuotaCreated() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
@@ -239,28 +249,29 @@ func (p *RBACTestSuite) TestNamespaceResourceQuotaCreated() {
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
-	ns := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "4"})
+	// configMaps isn't in the project quota, so it shouldn't reach the namespace's ResourceQuota.
+	ns := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "4", "configMaps": "50"})
 
 	var hard map[string]string
-	p.Require().Eventually(func() bool {
-		h, err := p.resourceQuotaHard(client, ns.Name)
+	s.Require().Eventually(func() bool {
+		h, err := s.resourceQuotaHard(client, ns.Name)
 		hard = h
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
-	p.Require().Equal("4", hard["pods"])
+	s.Require().Equal(map[string]string{"pods": "4"}, hard)
 }
 
 // TestNamespaceDefaultQuotaApplied tests that when a namespace is created in a project
 // without an explicit quota annotation, the project's namespaceDefaultResourceQuota is
 // applied by the controller.
-func (p *RBACTestSuite) TestNamespaceDefaultQuotaApplied() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestNamespaceDefaultQuotaApplied() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
@@ -268,34 +279,34 @@ func (p *RBACTestSuite) TestNamespaceDefaultQuotaApplied() {
 			Limit: &management.ResourceQuotaLimit{Pods: "4"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create namespace without explicit quota — should get the project default.
-	ns := p.createNamespaceWithQuota(client, p.projectName(project), nil)
+	ns := s.createNamespaceWithQuota(client, project, nil)
 
 	var hard map[string]string
-	p.Require().Eventually(func() bool {
-		h, err := p.resourceQuotaHard(client, ns.Name)
+	s.Require().Eventually(func() bool {
+		h, err := s.resourceQuotaHard(client, ns.Name)
 		hard = h
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
-	p.Require().Equal("4", hard["pods"])
+	s.Require().Equal("4", hard["pods"])
 }
 
 // TestProjectQuotaUpdateAppliedToNamespace tests that when a project is updated to
 // add a resource quota, existing namespaces in the project get a ResourceQuota created.
-func (p *RBACTestSuite) TestProjectQuotaUpdateAppliedToNamespace() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectQuotaUpdateAppliedToNamespace() {
+	client := s.newSubSession()
 
 	// Create project without quota.
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create a namespace (no quota yet on the project).
-	ns := p.createNamespaceWithQuota(client, p.projectName(project), nil)
+	ns := s.createNamespaceWithQuota(client, project, nil)
 
 	// Update the project to add quota.
 	_, err = client.Management.Project.Update(project, map[string]any{
@@ -306,27 +317,123 @@ func (p *RBACTestSuite) TestProjectQuotaUpdateAppliedToNamespace() {
 			Limit: &management.ResourceQuotaLimit{Pods: "4"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// The controller should apply the default quota to the existing namespace.
 	var hard map[string]string
-	p.Require().Eventually(func() bool {
-		h, err := p.resourceQuotaHard(client, ns.Name)
+	s.Require().Eventually(func() bool {
+		h, err := s.resourceQuotaHard(client, ns.Name)
 		hard = h
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
-	p.Require().Equal("4", hard["pods"])
+	s.Require().Equal("4", hard["pods"])
+}
+
+// TestAddQuotaFromProjectWithNamespacePropagation asserts that adding a limit to a project's quotas
+// adds it to an existing namespace's ResourceQuota.
+func (s *ProjectsTestSuite) TestAddQuotaFromProjectWithNamespacePropagation() {
+	client := s.newSubSession()
+
+	project, err := client.Management.Project.Create(&management.Project{
+		Name:      namegen.AppendRandomString("test-"),
+		ClusterID: s.clusterID,
+		ResourceQuota: &management.ProjectResourceQuota{
+			Limit: &management.ResourceQuotaLimit{LimitsCPU: "500m"},
+		},
+		NamespaceDefaultResourceQuota: &management.NamespaceResourceQuota{
+			Limit: &management.ResourceQuotaLimit{LimitsCPU: "200m"},
+		},
+	})
+	s.Require().NoError(err)
+
+	ns := s.createNamespaceWithQuota(client, project, nil)
+
+	// Precondition: the namespace's quota exists before the project changes, so the new limit has
+	// to propagate to an existing quota rather than being part of the initial one.
+	wantBefore := map[string]string{"limits.cpu": "200m"}
+	s.EventuallyWithT(func(c *assert.CollectT) {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
+		assert.NoError(c, err)
+		assert.Equal(c, wantBefore, hard)
+	}, time.Minute, 2*time.Second, "waiting for the namespace default quota in %s", ns.Name)
+
+	project.ResourceQuota.Limit.Secrets = "20"
+	project.NamespaceDefaultResourceQuota.Limit.Secrets = "10"
+	_, err = client.Management.Project.Replace(project)
+	s.Require().NoError(err)
+
+	// The quota controller sometimes gets a conflict updating the namespace annotation and retries.
+	wantAfter := map[string]string{"limits.cpu": "200m", "secrets": "10"}
+	s.EventuallyWithT(func(c *assert.CollectT) {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
+		assert.NoError(c, err)
+		assert.Equal(c, wantAfter, hard)
+	}, time.Minute, 2*time.Second, "waiting for the secrets limit to be added to the quota in %s", ns.Name)
+}
+
+// TestRemoveQuotaFromProjectWithNamespacePropagation asserts that removing limits from a project's
+// quotas removes them from its namespaces' ResourceQuotas, and removing the last one deletes the
+// ResourceQuota.
+func (s *ProjectsTestSuite) TestRemoveQuotaFromProjectWithNamespacePropagation() {
+	client := s.newSubSession()
+
+	project, err := client.Management.Project.Create(&management.Project{
+		Name:      namegen.AppendRandomString("test-"),
+		ClusterID: s.clusterID,
+		ResourceQuota: &management.ProjectResourceQuota{
+			Limit: &management.ResourceQuotaLimit{LimitsCPU: "500m", ConfigMaps: "10"},
+		},
+		NamespaceDefaultResourceQuota: &management.NamespaceResourceQuota{
+			Limit: &management.ResourceQuotaLimit{LimitsCPU: "200m", ConfigMaps: "5"},
+		},
+	})
+	s.Require().NoError(err)
+
+	ns := s.createNamespaceWithQuota(client, project, nil)
+
+	// Precondition: the namespace starts with both limits, so their removal below is a change.
+	wantBefore := map[string]string{"limits.cpu": "200m", "configmaps": "5"}
+	s.EventuallyWithT(func(c *assert.CollectT) {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
+		assert.NoError(c, err)
+		assert.Equal(c, wantBefore, hard)
+	}, time.Minute, 2*time.Second, "waiting for the namespace default quota in %s", ns.Name)
+
+	project.ResourceQuota.Limit.LimitsCPU = ""
+	project.NamespaceDefaultResourceQuota.Limit.LimitsCPU = ""
+	project, err = client.Management.Project.Replace(project)
+	s.Require().NoError(err)
+
+	// The quota controller sometimes gets a conflict updating the namespace annotation and retries.
+	wantAfter := map[string]string{"configmaps": "5"}
+	s.EventuallyWithT(func(c *assert.CollectT) {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
+		assert.NoError(c, err)
+		assert.Equal(c, wantAfter, hard)
+	}, time.Minute, 2*time.Second, "waiting for the CPU limit to be removed from the quota in %s", ns.Name)
+
+	// Now remove the last resource limit from the project.
+	project.ResourceQuota.Limit.ConfigMaps = ""
+	project.NamespaceDefaultResourceQuota.Limit.ConfigMaps = ""
+	_, err = client.Management.Project.Replace(project)
+	s.Require().NoError(err)
+
+	s.EventuallyWithT(func(c *assert.CollectT) {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
+		assert.NoError(c, err)
+		assert.Nil(c, hard)
+	}, time.Minute, 2*time.Second, "waiting for the quota in %s to be deleted", ns.Name)
 }
 
 // TestNamespaceQuotaExceedsProjectLimit tests that the controller handles a namespace
 // whose requested quota exceeds the project limit by zeroing overused resources in the
 // created k8s ResourceQuota, and that the project's usedLimit is not inflated.
-func (p *RBACTestSuite) TestNamespaceQuotaExceedsProjectLimit() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestNamespaceQuotaExceedsProjectLimit() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
@@ -334,34 +441,34 @@ func (p *RBACTestSuite) TestNamespaceQuotaExceedsProjectLimit() {
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create namespace requesting more pods than the project allows.
-	ns := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "200"})
+	ns := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "200"})
 
 	// The controller should still create a ResourceQuota, but with the overused resource zeroed.
 	var hard map[string]string
-	p.Require().Eventually(func() bool {
-		h, err := p.resourceQuotaHard(client, ns.Name)
+	s.Require().Eventually(func() bool {
+		h, err := s.resourceQuotaHard(client, ns.Name)
 		hard = h
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
-	p.Require().Equal("0", hard["pods"], "overused pods quota should be zeroed")
+	s.Require().Equal("0", hard["pods"], "overused pods quota should be zeroed")
 
 	// A namespace whose quota failed validation doesn't count towards the project's usage.
-	used, err := p.projectUsedLimit(client, project.ID, "pods")
-	p.Require().NoError(err)
-	p.Require().Equal("0", used, "project usedLimit should not include the overused namespace")
+	used, err := s.projectUsedLimit(client, project.ID, "pods")
+	s.Require().NoError(err)
+	s.Require().Equal("0", used, "project usedLimit should not include the overused namespace")
 }
 
 // TestProjectUsedQuotaUpdated tests that the project's usedLimit is updated by the
 // controller when namespaces with quotas are created in the project.
-func (p *RBACTestSuite) TestProjectUsedQuotaUpdated() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectUsedQuotaUpdated() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "100"},
 		},
@@ -369,29 +476,29 @@ func (p *RBACTestSuite) TestProjectUsedQuotaUpdated() {
 			Limit: &management.ResourceQuotaLimit{Pods: "4"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create namespace — default quota of 4 pods should apply.
-	ns := p.createNamespaceWithQuota(client, p.projectName(project), nil)
-	p.Require().Eventually(func() bool {
-		hard, err := p.resourceQuotaHard(client, ns.Name)
+	ns := s.createNamespaceWithQuota(client, project, nil)
+	s.Require().Eventually(func() bool {
+		hard, err := s.resourceQuotaHard(client, ns.Name)
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
 
-	p.Require().Eventually(func() bool {
-		used, err := p.projectUsedLimit(client, project.ID, "pods")
+	s.Require().Eventually(func() bool {
+		used, err := s.projectUsedLimit(client, project.ID, "pods")
 		return err == nil && used == "4"
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
 }
 
 // TestProjectUsedQuotaExactMatch tests that when all of a project's quota is consumed
 // by namespaces, the project quota cannot be reduced below the used amount.
-func (p *RBACTestSuite) TestProjectUsedQuotaExactMatch() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectUsedQuotaExactMatch() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "10"},
 		},
@@ -399,23 +506,23 @@ func (p *RBACTestSuite) TestProjectUsedQuotaExactMatch() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create two namespaces: 2 + 8 = 10 pods (full quota).
-	ns1 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.Require().Eventually(func() bool {
-		hard, err := p.resourceQuotaHard(client, ns1.Name)
+	ns1 := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "2"})
+	s.Require().Eventually(func() bool {
+		hard, err := s.resourceQuotaHard(client, ns1.Name)
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns1.Name)
 
-	ns2 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "8"})
-	p.Require().Eventually(func() bool {
-		hard, err := p.resourceQuotaHard(client, ns2.Name)
+	ns2 := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "8"})
+	s.Require().Eventually(func() bool {
+		hard, err := s.resourceQuotaHard(client, ns2.Name)
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns2.Name)
 
-	p.Require().Eventually(func() bool {
-		used, err := p.projectUsedLimit(client, project.ID, "pods")
+	s.Require().Eventually(func() bool {
+		used, err := s.projectUsedLimit(client, project.ID, "pods")
 		return err == nil && used == "10"
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=10")
 
@@ -429,18 +536,18 @@ func (p *RBACTestSuite) TestProjectUsedQuotaExactMatch() {
 			Limit: &management.ResourceQuotaLimit{Pods: "1"},
 		},
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 }
 
 // TestProjectQuotaAddRemoveFields tests adding and removing quota fields on a project
 // and verifying that the usedLimit is updated accordingly.
-func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectQuotaAddRemoveFields() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 		ResourceQuota: &management.ProjectResourceQuota{
 			Limit: &management.ResourceQuotaLimit{Pods: "10"},
 		},
@@ -448,26 +555,26 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create two namespaces using the default quota of 2 pods each.
-	ns1 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.Require().Eventually(func() bool {
-		hard, err := p.resourceQuotaHard(client, ns1.Name)
+	ns1 := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "2"})
+	s.Require().Eventually(func() bool {
+		hard, err := s.resourceQuotaHard(client, ns1.Name)
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns1.Name)
-	p.Require().Eventually(func() bool {
-		used, err := p.projectUsedLimit(client, project.ID, "pods")
+	s.Require().Eventually(func() bool {
+		used, err := s.projectUsedLimit(client, project.ID, "pods")
 		return err == nil && used == "2"
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=2")
 
-	ns2 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.Require().Eventually(func() bool {
-		hard, err := p.resourceQuotaHard(client, ns2.Name)
+	ns2 := s.createNamespaceWithQuota(client, project, map[string]string{"pods": "2"})
+	s.Require().Eventually(func() bool {
+		hard, err := s.resourceQuotaHard(client, ns2.Name)
 		return err == nil && len(hard) > 0
 	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns2.Name)
-	p.Require().Eventually(func() bool {
-		used, err := p.projectUsedLimit(client, project.ID, "pods")
+	s.Require().Eventually(func() bool {
+		used, err := s.projectUsedLimit(client, project.ID, "pods")
 		return err == nil && used == "4"
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
 
@@ -481,8 +588,8 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2", Services: "7"},
 		},
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 
 	// Add services field with a valid default.
 	project, err = client.Management.Project.Update(project, map[string]any{
@@ -493,11 +600,11 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2", Services: "2"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Controller should propagate services default to existing namespaces.
-	p.Require().Eventually(func() bool {
-		used, err := p.projectUsedLimit(client, project.ID, "services")
+	s.Require().Eventually(func() bool {
+		used, err := s.projectUsedLimit(client, project.ID, "services")
 		return err == nil && used == "4"
 	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.services=4")
 
@@ -510,7 +617,7 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2"},
 		},
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// NOTE: We do not assert that usedLimit.services converges to 0 because the
 	// reconcile controller (Norman-triggered) may enqueue namespaces before the
@@ -521,27 +628,27 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 	// Tracking issue: https://github.com/rancher/rancher/issues/55060
 	//
 	// After removing services, usedLimit.services should drop to 0.
-	// p.Require().Eventually(func() bool {
-	// 	used, err := p.projectUsedLimit(client, project.ID, "services")
+	// s.Require().Eventually(func() bool {
+	// 	used, err := s.projectUsedLimit(client, project.ID, "services")
 	// 	return err == nil && used == "0"
 	// }, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.services=0")
 }
 
 // TestProjectQuotaCannotExceedWithExistingNamespaces tests that setting a project quota
 // where default * existing namespace count exceeds the limit is rejected.
-func (p *RBACTestSuite) TestProjectQuotaCannotExceedWithExistingNamespaces() {
-	client := p.newSubSession()
+func (s *ProjectsTestSuite) TestProjectQuotaCannotExceedWithExistingNamespaces() {
+	client := s.newSubSession()
 
 	// Create project without quota.
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-"),
-		ClusterID: p.downstreamClusterID,
+		ClusterID: s.clusterID,
 	})
-	p.Require().NoError(err)
+	s.Require().NoError(err)
 
 	// Create 4 namespaces in the project.
 	for range 4 {
-		p.createNamespaceWithQuota(client, p.projectName(project), nil)
+		s.createNamespaceWithQuota(client, project, nil)
 	}
 
 	// Try setting quota where default (2) * 4 namespaces = 8 > limit (5) — should fail.
@@ -554,6 +661,6 @@ func (p *RBACTestSuite) TestProjectQuotaCannotExceedWithExistingNamespaces() {
 			Limit: &management.ResourceQuotaLimit{Pods: "2"},
 		},
 	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
+	s.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	s.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 }
