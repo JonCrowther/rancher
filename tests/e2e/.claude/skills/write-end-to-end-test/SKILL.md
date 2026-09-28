@@ -109,7 +109,7 @@ func (p *RBACTestSuite) SetupSuite() {
 	p.client = client
 
 	testProject, err := client.Management.Project.Create(&management.Project{
-		ClusterID: p.clusterID,
+		ClusterID: p.downstreamClusterID,
 		Name:      namegen.AppendRandomString("rbac-suite-"),
 	})
 	p.Require().NoError(err)
@@ -117,9 +117,6 @@ func (p *RBACTestSuite) SetupSuite() {
 }
 
 func (p *RBACTestSuite) TearDownSuite() {
-	client, err := p.client.WithSession(p.session)
-	p.Require().NoError(err)
-	p.Require().NoError(client.Management.Project.Delete(p.project))
 	p.session.Cleanup()
 }
 
@@ -197,11 +194,6 @@ The session tracks every direct create — Norman `client.Management.X.Create(..
 through the dynamic client from `client.GetDownStreamClusterClient(...)` alike — and its delete
 ignores 404s. So a manual `T().Cleanup` that deletes a directly-created resource is redundant; don't
 add one. `client.AsUser(...)` shares the parent client's session.
-
-One catch: the session's dynamic client only tracks `Create` on the interface `Namespace(...)`
-returns. For a cluster-scoped resource, call `Resource(gvr).Namespace("").Create(...)`; a bare
-`Resource(gvr).Create(...)` is untracked and leaks. Also, in a manual cleanup, don't pass
-`t.Context()` — it's canceled before cleanup functions run; use `context.Background()`.
 
 ### Reporting errors from a manual cleanup
 
@@ -315,7 +307,7 @@ func (p *RBACTestSuite) createUser(client *rancher.Client, prefix, globalRole st
 ```
 
 ```go
-// NOT a valid pattern to add, even though a version of it exists in rtbs_test.go today:
+// NOT a valid pattern (rtbs_test.go had this until the rbac/ audit inlined it):
 func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Eventually(func() bool { ... }, ...) // asserts the actual
 	_, err := userClient.Management.Cluster.ByID(p.clusterID)                // behavior under test —
@@ -326,7 +318,7 @@ func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 When a check needs polling, the helper should be a non-asserting getter that returns the observed
 value and an error, and the test writes its own `Eventually` around it. The pass condition then
 stays visible in the test (e.g. `resourceQuotaHard` and `projectUsedLimit` in
-`projects/project_quotas_test.go`):
+`rbac/project_quotas_test.go`):
 
 ```go
 p.Require().Eventually(func() bool {
@@ -338,6 +330,24 @@ p.Require().Eventually(func() bool {
 If two tests need an identical, lengthy check, it gets duplicated inline in both. That's an accepted
 DRY violation, not an oversight.
 
+### Negative checks need a positive precondition and a specific error
+
+A "user cannot do X" check passes trivially if the user's binding simply hasn't propagated yet, or
+if the call failed for an unrelated reason. So:
+
+- Before asserting a denial, wait for something the same binding *does* grant
+  (`extauthz.WaitForAllowed`), which proves the binding is in effect. For example, `read-only`
+  grants listing pods, `cluster-member` grants listing nodes, and the global `user` role grants
+  creating secrets in `cattle-global-data`.
+- Assert the specific failure, not just `Error(err)`: `apierrors.IsForbidden(err)` for k8s API
+  errors, or `errors.As(err, &apiErr)` plus `apiErr.StatusCode` for Norman errors.
+- Poll a denial with `EventuallyWithT` and an `assert.Truef(c, …, "got: %v", err)`, so a
+  timeout reports the last error rather than "Condition never satisfied".
+- When a regression would make the forbidden action actually happen, prove the denial with an
+  access review (`checkAccessAllowed`) instead of attempting it (don't really delete a node from
+  the shared cluster). Likewise, point negative-path creates at low-privilege roles
+  (e.g. `kontainerdrivers-manage`, not `admin`), so an unexpected success doesn't escalate anyone.
+
 ### Four tiers of code reuse
 
 Keep a helper as close to its callers as possible — the goal is that a reader can understand a test
@@ -348,7 +358,7 @@ without jumping between files.
    only (e.g. a helper closure used twice within a single test and nowhere else).
 3. **File-local helper** — setup/action (never assertion) shared by several tests *in the same topic
    file* and nowhere else (e.g. `setClusterCreatorDefaults` in `rbac/default_roles_test.go`,
-   `waitForResourceQuota` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
+   `resourceQuotaHard` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
    not in the suite file.
 4. **Suite-level helper** — setup/action (never assertion) shared across tests in *more than one*
    topic file (e.g. `createUser`, `createNamespace`), defined in the suite's `_suite_test.go` file.
@@ -362,10 +372,12 @@ Before writing a new file-local or suite-level helper, check whether an equivale
 
 ### Current known gaps (do not fix as part of this skill)
 
-`rbac/rtbs_test.go` still has the `assertClusterAccessRevoked` helper shown above as a
-counter-example (and `rbac/global_roles_test.go` has a similar `assertKontainerDriverCount`). Both
-are tracked for a separate audit pass. Adding a new test does not require or invite fixing them —
-leave them as-is.
+Directories not yet through the audit may still contain patterns this skill forbids (assertion
+helpers, `_ =` cleanups, bare `Error(err)` negative checks). `rbac/` has been audited. Adding a new
+test does not require or invite fixing existing code elsewhere — leave it as-is. Known open items
+in `rbac/`: the kontainer-driver count of 3 in `TestKontainerDriverVisibilityByGlobalRole` assumes
+a default install, and `TestDefaultSystemProjectRole` has a loop that passes vacuously (marked
+TODO).
 
 ## Workflow
 
