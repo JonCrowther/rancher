@@ -1,4 +1,4 @@
-package integration
+package rbac
 
 import (
 	"errors"
@@ -11,7 +11,21 @@ import (
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 )
 
-func (p *RTBTestSuite) TestUserVsUserBaseGlobalRoleVisibility() {
+// assertKontainerDriverCount polls until the client's visible kontainer driver count matches expected,
+// since GlobalRoleBinding permissions are reconciled asynchronously by RBAC controllers.
+func (p *RBACTestSuite) assertKontainerDriverCount(c *rancher.Client, expected int) {
+	var kds *management.KontainerDriverCollection
+	p.Require().Eventually(func() bool {
+		var err error
+		kds, err = c.Management.KontainerDriver.List(nil)
+		return err == nil && len(kds.Data) == expected
+	}, 30*time.Second, time.Second, "timed out waiting for kontainer driver visibility to reach %d item(s)", expected)
+	p.Require().Len(kds.Data, expected)
+}
+
+// TestUserVsUserBaseGlobalRoleVisibility tests that users with the "user" and "user-base" global
+// roles can only see themselves, and that only "user" can see role templates.
+func (p *RBACTestSuite) TestUserVsUserBaseGlobalRoleVisibility() {
 	client := p.newSubSession()
 
 	// Create user1 with the standard "user" global role.
@@ -59,7 +73,9 @@ func (p *RTBTestSuite) TestUserVsUserBaseGlobalRoleVisibility() {
 	p.Require().Empty(user2RTs.Data, "user2 does not have permission to view roleTemplates")
 }
 
-func (p *RTBTestSuite) TestKontainerDriverVisibilityByGlobalRole() {
+// TestKontainerDriverVisibilityByGlobalRole tests which global roles grant visibility of kontainer
+// drivers.
+func (p *RBACTestSuite) TestKontainerDriverVisibilityByGlobalRole() {
 	client := p.newSubSession()
 
 	createUserWithRole := func(role string) *rancher.Client {
@@ -82,60 +98,9 @@ func (p *RTBTestSuite) TestKontainerDriverVisibilityByGlobalRole() {
 	p.assertKontainerDriverCount(createUserWithRole("settings-manage"), 0)
 }
 
-// assertKontainerDriverCount polls until the client's visible kontainer driver count matches expected,
-// since GlobalRoleBinding permissions are reconciled asynchronously by RBAC controllers.
-func (p *RTBTestSuite) assertKontainerDriverCount(c *rancher.Client, expected int) {
-	var kds *management.KontainerDriverCollection
-	p.Require().Eventually(func() bool {
-		var err error
-		kds, err = c.Management.KontainerDriver.List(nil)
-		return err == nil && len(kds.Data) == expected
-	}, 30*time.Second, time.Second, "timed out waiting for kontainer driver visibility to reach %d item(s)", expected)
-	p.Require().Len(kds.Data, expected)
-}
-
-// TestBuiltinGlobalRoleOnlyNewUserDefaultEditable tests that admins can only edit
-// a builtin global role's newUserDefault field.
-func (p *RTBTestSuite) TestBuiltinGlobalRoleOnlyNewUserDefaultEditable() {
-	client := p.newSubSession()
-
-	gr, err := client.Management.GlobalRole.ByID("admin")
-	p.Require().NoError(err)
-	p.Require().True(gr.Builtin)
-	_, hasRemove := gr.Links["remove"]
-	p.Require().False(hasRemove, "builtin global role should not have a remove link")
-	p.Require().False(gr.NewUserDefault)
-
-	// Attempt to update multiple fields; only newUserDefault should change.
-	updated, err := client.Management.GlobalRole.Update(gr, map[string]any{
-		"name":           "gr-test",
-		"description":    "asdf",
-		"rules":          nil,
-		"newUserDefault": true,
-		"builtin":        true,
-	})
-	p.Require().NoError(err)
-
-	// Revert newUserDefault after test.
-	p.T().Cleanup(func() {
-		_, _ = client.Management.GlobalRole.Update(updated, map[string]any{
-			"newUserDefault": false,
-		})
-	})
-
-	// Name should remain unchanged.
-	p.Require().Equal(gr.Name, updated.Name)
-	// Rules should not have been wiped out.
-	p.Require().NotEmpty(updated.Rules)
-	// Builtin should still be true.
-	p.Require().True(updated.Builtin)
-	// newUserDefault is the only field that should have changed.
-	p.Require().True(updated.NewUserDefault)
-}
-
 // TestOnlyAdminCanCRUDGlobalRoles tests that only admins can create, get, update,
 // and delete non-builtin global roles.
-func (p *RTBTestSuite) TestOnlyAdminCanCRUDGlobalRoles() {
+func (p *RBACTestSuite) TestOnlyAdminCanCRUDGlobalRoles() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "gr-user", "user")
@@ -195,9 +160,48 @@ func (p *RTBTestSuite) TestOnlyAdminCanCRUDGlobalRoles() {
 	p.Require().Equal(http.StatusForbidden, apiErr.StatusCode)
 }
 
+// TestBuiltinGlobalRoleOnlyNewUserDefaultEditable tests that admins can only edit
+// a builtin global role's newUserDefault field.
+func (p *RBACTestSuite) TestBuiltinGlobalRoleOnlyNewUserDefaultEditable() {
+	client := p.newSubSession()
+
+	gr, err := client.Management.GlobalRole.ByID("admin")
+	p.Require().NoError(err)
+	p.Require().True(gr.Builtin)
+	_, hasRemove := gr.Links["remove"]
+	p.Require().False(hasRemove, "builtin global role should not have a remove link")
+	p.Require().False(gr.NewUserDefault)
+
+	// Attempt to update multiple fields; only newUserDefault should change.
+	updated, err := client.Management.GlobalRole.Update(gr, map[string]any{
+		"name":           "gr-test",
+		"description":    "asdf",
+		"rules":          nil,
+		"newUserDefault": true,
+		"builtin":        true,
+	})
+	p.Require().NoError(err)
+
+	// Revert newUserDefault after test.
+	p.T().Cleanup(func() {
+		_, _ = client.Management.GlobalRole.Update(updated, map[string]any{
+			"newUserDefault": false,
+		})
+	})
+
+	// Name should remain unchanged.
+	p.Require().Equal(gr.Name, updated.Name)
+	// Rules should not have been wiped out.
+	p.Require().NotEmpty(updated.Rules)
+	// Builtin should still be true.
+	p.Require().True(updated.Builtin)
+	// newUserDefault is the only field that should have changed.
+	p.Require().True(updated.NewUserDefault)
+}
+
 // TestAdminCannotDeleteBuiltinGlobalRole tests that admins can edit builtin global
 // roles but cannot delete them.
-func (p *RTBTestSuite) TestAdminCannotDeleteBuiltinGlobalRole() {
+func (p *RBACTestSuite) TestAdminCannotDeleteBuiltinGlobalRole() {
 	client := p.newSubSession()
 
 	gr, err := client.Management.GlobalRole.ByID("admin")
@@ -225,99 +229,4 @@ func (p *RTBTestSuite) TestAdminCannotDeleteBuiltinGlobalRole() {
 	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
 	p.Require().Equal(http.StatusForbidden, apiErr.StatusCode)
 	p.Require().Contains(apiErr.Body, "cannot delete builtin global roles")
-}
-
-// TestGRBCannotUpdateGlobalRoleID tests that the globalRoleId field on a
-// GlobalRoleBinding cannot be changed after creation.
-func (p *RTBTestSuite) TestGRBCannotUpdateGlobalRoleID() {
-	client := p.newSubSession()
-
-	user := p.createUser(client, "grb-user", "user")
-
-	grb, err := client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		Name:         namegen.AppendRandomString("grb-"),
-		UserID:       user.ID,
-		GlobalRoleID: "nodedrivers-manage",
-	})
-	p.Require().NoError(err)
-
-	// Attempt to change globalRoleId; it should remain unchanged.
-	updated, err := client.Management.GlobalRoleBinding.Update(grb, map[string]any{
-		"globalRoleId": "settings-manage",
-	})
-	p.Require().NoError(err)
-	p.Require().Equal("nodedrivers-manage", updated.GlobalRoleID)
-}
-
-// TestGRBGlobalRoleMustExist tests that creating a GlobalRoleBinding referencing
-// a non-existent global role returns a 404.
-func (p *RTBTestSuite) TestGRBGlobalRoleMustExist() {
-	client := p.newSubSession()
-
-	user := p.createUser(client, "grb-user", "user")
-
-	_, err := client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		Name:         namegen.AppendRandomString("grb-"),
-		GlobalRoleID: "somefakerole",
-		UserID:       user.ID,
-	})
-	var apiErr *clientbase.APIError
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusNotFound, apiErr.StatusCode)
-}
-
-// TestGRBCannotUpdateSubject tests that userId and groupPrincipalId fields on a
-// GlobalRoleBinding cannot be changed after creation.
-func (p *RTBTestSuite) TestGRBCannotUpdateSubject() {
-	client := p.newSubSession()
-
-	user1 := p.createUser(client, "grb-user1", "user")
-	user2 := p.createUser(client, "grb-user2", "user")
-
-	grb, err := client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		Name:         namegen.AppendRandomString("grb-"),
-		UserID:       user1.ID,
-		GlobalRoleID: "nodedrivers-manage",
-	})
-	p.Require().NoError(err)
-
-	// Attempt to change userId; it should remain unchanged.
-	updated, err := client.Management.GlobalRoleBinding.Update(grb, map[string]any{
-		"userId": user2.ID,
-	})
-	p.Require().NoError(err)
-	p.Require().Equal(user1.ID, updated.UserID)
-
-	// Attempt to set groupPrincipalId; userId should remain, groupPrincipalId should stay empty.
-	updated, err = client.Management.GlobalRoleBinding.Update(updated, map[string]any{
-		"groupPrincipalId": "groupa",
-	})
-	p.Require().NoError(err)
-	p.Require().Equal(user1.ID, updated.UserID)
-	p.Require().Empty(updated.GroupPrincipalID)
-}
-
-// TestGRBTargetsUserOrGroup tests that a GlobalRoleBinding must exclusively target
-// a userId or groupPrincipalId, not both and not neither.
-func (p *RTBTestSuite) TestGRBTargetsUserOrGroup() {
-	client := p.newSubSession()
-
-	user := p.createUser(client, "grb-user", "user")
-
-	// Cannot specify both userId and groupPrincipalId (422).
-	_, err := client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		UserID:           user.ID,
-		GroupPrincipalID: "asd",
-		GlobalRoleID:     "admin",
-	})
-	var apiErr *clientbase.APIError
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
-
-	// Cannot omit both userId and groupPrincipalId (422).
-	_, err = client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		GlobalRoleID: "admin",
-	})
-	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
-	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)
 }

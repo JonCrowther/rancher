@@ -1,4 +1,4 @@
-package integration
+package rbac
 
 import (
 	"time"
@@ -15,7 +15,7 @@ const (
 // TestBackupsManageRole asserts that binding a user to the "backups-manage"
 // ClusterRoleTemplate on the local cluster results in the user having access
 // to "etcdbackups" resources.
-func (p *RTBTestSuite) TestBackupsManageRole() {
+func (p *RBACTestSuite) TestBackupsManageRole() {
 	client := p.newSubSession()
 
 	restrictedUser := p.createUser(client, "restricted", "user-base")
@@ -46,7 +46,7 @@ func (p *RTBTestSuite) TestBackupsManageRole() {
 
 // TestStandardUsersCannotAccessBackups asserts that a user with only the
 // built-in "user" global role cannot access "etcdbackups" resources.
-func (p *RTBTestSuite) TestStandardUsersCannotAccessBackups() {
+func (p *RBACTestSuite) TestStandardUsersCannotAccessBackups() {
 	client := p.newSubSession()
 
 	standardUser := p.createUser(client, "standard-user", "user")

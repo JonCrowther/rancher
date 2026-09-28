@@ -1,116 +1,28 @@
-package integration
+package rbac
 
 import (
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"testing"
 	"time"
 
 	extnamespaces "github.com/rancher/rancher/tests/e2e/actions/kubeapi/namespaces"
 	extrbac "github.com/rancher/rancher/tests/e2e/actions/kubeapi/rbac"
 	"github.com/rancher/rancher/tests/e2e/actions/kubeapi/secrets"
-
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	extauthz "github.com/rancher/shepherd/extensions/kubeapi/authorization"
-	"github.com/rancher/shepherd/extensions/users"
-	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
-	"github.com/rancher/shepherd/pkg/api/scheme"
 	"github.com/rancher/shepherd/pkg/clientbase"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
 	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func init() {
-	authzv1.SchemeBuilder.AddToScheme(scheme.Scheme.Scheme)
-}
-
-type RTBTestSuite struct {
-	suite.Suite
-	client              *rancher.Client
-	project             *management.Project
-	session             *session.Session
-	downstreamClusterID string
-}
-
-func (p *RTBTestSuite) SetupSuite() {
-	p.downstreamClusterID = "local"
-	testSession := session.NewSession()
-	p.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	p.Require().NoError(err)
-
-	p.client = client
-
-	projectConfig := &management.Project{
-		ClusterID: p.downstreamClusterID,
-		Name:      "TestProject",
-	}
-
-	testProject, err := client.Management.Project.Create(projectConfig)
-	p.Require().NoError(err)
-
-	p.project = testProject
-}
-
-func (p *RTBTestSuite) TearDownSuite() {
-	client, err := p.client.WithSession(p.session)
-	p.Require().NoError(err)
-
-	err = client.Management.Project.Delete(p.project)
-	p.Require().NoError(err)
-	p.session.Cleanup()
-}
-
-// newSubSession creates a new sub-session client for test isolation.
-func (p *RTBTestSuite) newSubSession() *rancher.Client {
-	subSession := p.session.NewSession()
-	client, err := p.client.WithSession(subSession)
-	p.Require().NoError(err)
-	p.T().Cleanup(subSession.Cleanup)
-	return client
-}
-
-// createUser creates a new user with the given global role and returns it with password set.
-func (p *RTBTestSuite) createUser(client *rancher.Client, prefix, globalRole string) *management.User {
-	enabled := true
-	pw := password.GenerateUserPassword("testpass-")
-	user, err := users.CreateUserWithRole(client, &management.User{
-		Username: namegen.AppendRandomString(prefix + "-"),
-		Password: pw,
-		Name:     prefix,
-		Enabled:  &enabled,
-	}, globalRole)
-	p.Require().NoError(err)
-	user.Password = pw
-	return user
-}
-
-// projectName extracts the project namespace name from a project ID (e.g. "local:p-xxxxx" → "p-xxxxx").
-func (p *RTBTestSuite) projectName(project *management.Project) string {
-	p.Require().NotNil(project)
-	_, name, found := strings.Cut(project.ID, ":")
-	p.Require().True(found, "projectName: invalid project ID %q, expected format <cluster>:<project>", project.ID)
-	return name
-}
-
-// createNamespace creates a namespace in the given project with default settings.
-func (p *RTBTestSuite) createNamespace(client *rancher.Client, projName string) *corev1.Namespace {
-	ns, err := extnamespaces.CreateNamespace(client, p.downstreamClusterID, projName, namegen.AppendRandomString("testns-"), "{}", map[string]string{}, map[string]string{})
-	p.Require().NoError(err)
-	return ns
-}
-
 // assertClusterAccessRevoked verifies that the given user client no longer has access to the downstream cluster.
-func (p *RTBTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
+func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Eventually(func() bool {
 		clusters, err := userClient.Management.Cluster.List(nil)
 		return err == nil && len(clusters.Data) == 0
@@ -121,7 +33,10 @@ func (p *RTBTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Contains(err.Error(), "403")
 }
 
-func (p *RTBTestSuite) TestPRTBRoleTemplateInheritance() {
+// TestPRTBRoleTemplateInheritance tests that a user bound by a PRTB to a role template gains the
+// permissions of the role templates it inherits from, both directly and through a chain of
+// inheritance, and that changes to an inherited role template propagate to the user.
+func (p *RBACTestSuite) TestPRTBRoleTemplateInheritance() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -262,7 +177,10 @@ func (p *RTBTestSuite) TestPRTBRoleTemplateInheritance() {
 	p.Require().NoError(err)
 }
 
-func (p *RTBTestSuite) TestCRTBRoleTemplateInheritance() {
+// TestCRTBRoleTemplateInheritance tests that a user bound by a CRTB to a role template gains the
+// permissions of the role templates it inherits from, both directly and through a chain of
+// inheritance, and that changes to an inherited role template propagate to the user.
+func (p *RBACTestSuite) TestCRTBRoleTemplateInheritance() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -394,76 +312,9 @@ func (p *RTBTestSuite) TestCRTBRoleTemplateInheritance() {
 	p.Require().NoError(err)
 }
 
-func (p *RTBTestSuite) TestRemovingPRTBRevokesNamespaceAccess() {
-	client := p.newSubSession()
-
-	user := p.createUser(client, "testuser", "user")
-
-	testUser, err := client.AsUser(user)
-	p.Require().NoError(err)
-
-	// Helper function to create a project and add the user as project-member
-	createProjectAndAddUser := func() (*management.Project, *management.ProjectRoleTemplateBinding) {
-		projectConfig := &management.Project{
-			ClusterID: p.downstreamClusterID,
-			Name:      namegen.AppendRandomString("test-project-"),
-		}
-
-		project, err := client.Management.Project.Create(projectConfig)
-		p.Require().NoError(err)
-
-		prtb, err := client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
-			UserID:         user.ID,
-			RoleTemplateID: "project-member",
-			ProjectID:      project.ID,
-		})
-		p.Require().NoError(err)
-
-		return project, prtb
-	}
-
-	// Create two projects and add user to both
-	project1, _ := createProjectAndAddUser()
-	project2, prtb2 := createProjectAndAddUser()
-
-	// Helper function to add a namespace to a project
-	addNamespaceToProject := func(project *management.Project) *corev1.Namespace {
-		return p.createNamespace(client, p.projectName(project))
-	}
-
-	// Add namespace to first project
-	ns1 := addNamespaceToProject(project1)
-
-	// Verify user can access namespace in first project
-	p.Require().Eventually(func() bool {
-		_, err = extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
-		return err == nil
-	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be applied to user")
-
-	// Add namespace to second project
-	ns2 := addNamespaceToProject(project2)
-
-	// Verify user can access namespace in both projects
-	p.Require().Eventually(func() bool {
-		_, err1 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
-		_, err2 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns2.Name)
-		return err1 == nil && err2 == nil
-	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be applied to user")
-
-	// Remove user from second project
-	err = client.Management.ProjectRoleTemplateBinding.Delete(prtb2)
-	p.Require().NoError(err)
-
-	// Verify user can still access namespace in first project but not in second anymore
-	p.Require().NoError(err)
-	p.Require().Eventually(func() bool {
-		_, err1 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
-		_, err2 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns2.Name)
-		return apierrors.IsForbidden(err2) && err1 == nil
-	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be removed from user")
-}
-
-func (p *RTBTestSuite) TestAPIGroupInRoleTemplate() {
+// TestAPIGroupInRoleTemplate tests that a cluster role template with API-group-scoped rules grants a
+// user bound via a CRTB exactly the listed verbs on those groups' resources.
+func (p *RBACTestSuite) TestAPIGroupInRoleTemplate() {
 	client := p.newSubSession()
 
 	// Skip if admin can't see any nodes.
@@ -533,7 +384,80 @@ func (p *RTBTestSuite) TestAPIGroupInRoleTemplate() {
 	p.Require().ErrorContains(err, "403")
 }
 
-func (p *RTBTestSuite) TestDeletingPRTBRemovesClusterAccess() {
+// TestRemovingPRTBRevokesNamespaceAccess tests that removing a user's PRTB from one project revokes
+// access to that project's namespaces without affecting access granted by a PRTB in another project.
+func (p *RBACTestSuite) TestRemovingPRTBRevokesNamespaceAccess() {
+	client := p.newSubSession()
+
+	user := p.createUser(client, "testuser", "user")
+
+	testUser, err := client.AsUser(user)
+	p.Require().NoError(err)
+
+	// Helper function to create a project and add the user as project-member
+	createProjectAndAddUser := func() (*management.Project, *management.ProjectRoleTemplateBinding) {
+		projectConfig := &management.Project{
+			ClusterID: p.downstreamClusterID,
+			Name:      namegen.AppendRandomString("test-project-"),
+		}
+
+		project, err := client.Management.Project.Create(projectConfig)
+		p.Require().NoError(err)
+
+		prtb, err := client.Management.ProjectRoleTemplateBinding.Create(&management.ProjectRoleTemplateBinding{
+			UserID:         user.ID,
+			RoleTemplateID: "project-member",
+			ProjectID:      project.ID,
+		})
+		p.Require().NoError(err)
+
+		return project, prtb
+	}
+
+	// Create two projects and add user to both
+	project1, _ := createProjectAndAddUser()
+	project2, prtb2 := createProjectAndAddUser()
+
+	// Helper function to add a namespace to a project
+	addNamespaceToProject := func(project *management.Project) *corev1.Namespace {
+		return p.createNamespace(client, p.projectName(project))
+	}
+
+	// Add namespace to first project
+	ns1 := addNamespaceToProject(project1)
+
+	// Verify user can access namespace in first project
+	p.Require().Eventually(func() bool {
+		_, err = extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
+		return err == nil
+	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be applied to user")
+
+	// Add namespace to second project
+	ns2 := addNamespaceToProject(project2)
+
+	// Verify user can access namespace in both projects
+	p.Require().Eventually(func() bool {
+		_, err1 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
+		_, err2 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns2.Name)
+		return err1 == nil && err2 == nil
+	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be applied to user")
+
+	// Remove user from second project
+	err = client.Management.ProjectRoleTemplateBinding.Delete(prtb2)
+	p.Require().NoError(err)
+
+	// Verify user can still access namespace in first project but not in second anymore
+	p.Require().NoError(err)
+	p.Require().Eventually(func() bool {
+		_, err1 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns1.Name)
+		_, err2 := extnamespaces.GetNamespaceByName(testUser, p.downstreamClusterID, ns2.Name)
+		return apierrors.IsForbidden(err2) && err1 == nil
+	}, 2*time.Minute, 2*time.Second, "waiting for permissions to be removed from user")
+}
+
+// TestDeletingPRTBRemovesClusterAccess tests that deleting a user's only PRTB removes the membership
+// ClusterRoleBinding and revokes the user's access to the cluster.
+func (p *RBACTestSuite) TestDeletingPRTBRemovesClusterAccess() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -584,7 +508,9 @@ func (p *RTBTestSuite) TestDeletingPRTBRemovesClusterAccess() {
 	p.assertClusterAccessRevoked(testUser)
 }
 
-func (p *RTBTestSuite) TestDeletingPRTBCleansUpLegacyMembershipLabels() {
+// TestDeletingPRTBCleansUpLegacyMembershipLabels tests that deleting a PRTB cleans up the membership
+// ClusterRoleBinding labelled with the PRTB's key and revokes the user's access to the cluster.
+func (p *RBACTestSuite) TestDeletingPRTBCleansUpLegacyMembershipLabels() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -633,7 +559,9 @@ func (p *RTBTestSuite) TestDeletingPRTBCleansUpLegacyMembershipLabels() {
 	p.assertClusterAccessRevoked(testUser)
 }
 
-func (p *RTBTestSuite) TestCRTBCannotTargetUsersAndGroup() {
+// TestCRTBCannotTargetUsersAndGroup tests that creating a CRTB that targets both a user and a group
+// is rejected with a 422.
+func (p *RBACTestSuite) TestCRTBCannotTargetUsersAndGroup() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -653,7 +581,9 @@ func (p *RTBTestSuite) TestCRTBCannotTargetUsersAndGroup() {
 	p.Require().Contains(apiErr.Body, "must target a user [userId]/[userPrincipalId] OR a group [groupId]/[groupPrincipalId]")
 }
 
-func (p *RTBTestSuite) TestCRTBMustHaveTarget() {
+// TestCRTBMustHaveTarget tests that creating a CRTB with neither a user nor a group target is
+// rejected with a 422.
+func (p *RBACTestSuite) TestCRTBMustHaveTarget() {
 	client := p.newSubSession()
 
 	_, err := client.Management.ClusterRoleTemplateBinding.Create(&management.ClusterRoleTemplateBinding{
@@ -669,7 +599,9 @@ func (p *RTBTestSuite) TestCRTBMustHaveTarget() {
 	p.Require().Contains(apiErr.Body, "must target a user [userId]/[userPrincipalId] OR a group [groupId]/[groupPrincipalId]")
 }
 
-func (p *RTBTestSuite) TestCRTBCannotUpdateSubjectsOrCluster() {
+// TestCRTBCannotUpdateSubjectsOrCluster tests that updates to a CRTB's cluster and subject fields
+// are ignored.
+func (p *RBACTestSuite) TestCRTBCannotUpdateSubjectsOrCluster() {
 	client := p.newSubSession()
 
 	user := p.createUser(client, "testuser", "user")
@@ -707,8 +639,4 @@ func (p *RTBTestSuite) TestCRTBCannotUpdateSubjectsOrCluster() {
 	p.Require().Equal(oldCRTB.UserPrincipalID, updatedCRTB.UserPrincipalID)
 	p.Require().Equal(oldCRTB.GroupPrincipalID, updatedCRTB.GroupPrincipalID)
 	p.Require().Equal(oldCRTB.GroupID, updatedCRTB.GroupID)
-}
-
-func TestRTBTestSuite(t *testing.T) {
-	suite.Run(t, new(RTBTestSuite))
 }

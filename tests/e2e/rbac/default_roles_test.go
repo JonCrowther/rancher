@@ -1,4 +1,4 @@
-package integration
+package rbac
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 
 // ensureClusterRolesExist ensures the given ClusterRoles exist in the downstream cluster,
 // creating them if necessary, and registers test cleanup to delete any created roles.
-func (p *RTBTestSuite) ensureClusterRolesExist(client *rancher.Client, names []string) {
+func (p *RBACTestSuite) ensureClusterRolesExist(client *rancher.Client, names []string) {
 	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
 	p.Require().NoError(err)
 
@@ -52,7 +52,7 @@ func (p *RTBTestSuite) ensureClusterRolesExist(client *rancher.Client, names []s
 // setClusterCreatorDefaults sets the given roles as cluster creator defaults. When a cluster is created these roles will be bound to the creator.
 // Clears all clusterCreatorDefault flags, then sets them on the given role IDs.
 // Registers a cleanup to restore original defaults.
-func (p *RTBTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs []string) {
+func (p *RBACTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs []string) {
 	roleTemplates, err := client.Management.RoleTemplate.List(nil)
 	p.Require().NoError(err)
 
@@ -109,7 +109,7 @@ func (p *RTBTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs
 // setProjectCreatorDefaults sets the given roles as project creator defaults. When a project is created these roles will be bound to the creator.
 // Clears all projectCreatorDefault flags, then sets them on the given role IDs.
 // Registers a cleanup to restore original defaults.
-func (p *RTBTestSuite) setProjectCreatorDefaults(client *rancher.Client, roleIDs []string) {
+func (p *RBACTestSuite) setProjectCreatorDefaults(client *rancher.Client, roleIDs []string) {
 	roleTemplates, err := client.Management.RoleTemplate.List(nil)
 	p.Require().NoError(err)
 
@@ -162,7 +162,7 @@ func (p *RTBTestSuite) setProjectCreatorDefaults(client *rancher.Client, roleIDs
 // setGlobalRoleDefaults sets the given roles as new user defaults. When a new user is created these roles will be assigned to them.
 // Clears all newUserDefault flags, then sets them on the given role IDs.
 // Registers a cleanup to restore original defaults.
-func (p *RTBTestSuite) setGlobalRoleDefaults(client *rancher.Client, roleIDs []string) {
+func (p *RBACTestSuite) setGlobalRoleDefaults(client *rancher.Client, roleIDs []string) {
 	globalRoles, err := client.Management.GlobalRole.List(nil)
 	p.Require().NoError(err)
 
@@ -213,7 +213,7 @@ func (p *RTBTestSuite) setGlobalRoleDefaults(client *rancher.Client, roleIDs []s
 }
 
 // TestClusterCreateDefaultRole tests that any roles that are set as cluster creator defaults get assigned to the creator when a cluster is created.
-func (p *RTBTestSuite) TestClusterCreateDefaultRole() {
+func (p *RBACTestSuite) TestClusterCreateDefaultRole() {
 	client := p.newSubSession()
 
 	p.ensureClusterRolesExist(client, []string{"monitoring-ui-view", "navlinks-view", "navlinks-manage"})
@@ -265,7 +265,7 @@ func (p *RTBTestSuite) TestClusterCreateDefaultRole() {
 }
 
 // TestClusterCreateRoleLocked tests that if a cluster creator default role is locked, it is not bound to the creator and does not prevent other defaults from being bound.
-func (p *RTBTestSuite) TestClusterCreateRoleLocked() {
+func (p *RBACTestSuite) TestClusterCreateRoleLocked() {
 	client := p.newSubSession()
 
 	p.ensureClusterRolesExist(client, []string{"monitoring-ui-view", "navlinks-view", "navlinks-manage"})
@@ -320,7 +320,7 @@ func (p *RTBTestSuite) TestClusterCreateRoleLocked() {
 }
 
 // TestProjectCreateDefaultRole tests that any roles that are set as project creator defaults get assigned to the creator when a project is created.
-func (p *RTBTestSuite) TestProjectCreateDefaultRole() {
+func (p *RBACTestSuite) TestProjectCreateDefaultRole() {
 	client := p.newSubSession()
 
 	p.ensureClusterRolesExist(client, []string{"monitoring-ui-view", "navlinks-view", "navlinks-manage"})
@@ -371,7 +371,7 @@ func (p *RTBTestSuite) TestProjectCreateDefaultRole() {
 }
 
 // TestProjectCreateRoleLocked tests that if a project creator default role is locked, it is not bound to the creator and does not prevent other defaults from being bound.
-func (p *RTBTestSuite) TestProjectCreateRoleLocked() {
+func (p *RBACTestSuite) TestProjectCreateRoleLocked() {
 	client := p.newSubSession()
 
 	p.ensureClusterRolesExist(client, []string{"monitoring-ui-view", "navlinks-view", "navlinks-manage"})
@@ -433,7 +433,7 @@ func (p *RTBTestSuite) TestProjectCreateRoleLocked() {
 }
 
 // TestUserCreateDefaultRole tests that any roles that are set as new user defaults get assigned to a new user when they are created.
-func (p *RTBTestSuite) TestUserCreateDefaultRole() {
+func (p *RBACTestSuite) TestUserCreateDefaultRole() {
 	client := p.newSubSession()
 
 	p.ensureClusterRolesExist(client, []string{"monitoring-ui-view", "navlinks-view", "navlinks-manage"})
@@ -494,7 +494,7 @@ func (p *RTBTestSuite) TestUserCreateDefaultRole() {
 }
 
 // TestDefaultSystemProjectRole tests that the default and system projects have the correct roles assigned.
-func (p *RTBTestSuite) TestDefaultSystemProjectRole() {
+func (p *RBACTestSuite) TestDefaultSystemProjectRole() {
 	client := p.newSubSession()
 
 	projects, err := client.Management.Project.List(&types.ListOpts{

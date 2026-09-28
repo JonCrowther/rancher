@@ -112,7 +112,7 @@ go test -v -timeout 30m -failfast -p 1 ./tests/e2e/...
 go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/
 
 # Run a specific test within a suite
-go test -v -count=1 -run TestRTBTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
+go test -v -count=1 -run TestRBACTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
 
 # Run Steve API tests (local cluster only — no downstream cluster needed)
 go test -v -count=1 -run TestSteveLocal ./tests/e2e/steveapi/
@@ -188,7 +188,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `clusters/` | `TestK8sProxy` | K8s API proxy through Rancher | Yes |
 | `projects/` | `TestResourceQuotaTestSuite` | Namespace resource quotas | No |
 | `projects/` | `TestProjectUserTestSuite` | Project-level user access | No |
-| `rbac/` | `TestRTBTestSuite` | Role/ClusterRole template bindings, features, impersonation, projects | No (uses `local`) |
+| `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, projects & quotas, impersonation, features | No (uses `local`) |
 | `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
 | `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
 | `users/` | `TestUserTestSuite` | User CRUD operations | No |

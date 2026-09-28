@@ -1,4 +1,4 @@
-package integration
+package rbac
 
 import (
 	"errors"
@@ -9,7 +9,8 @@ import (
 	"github.com/rancher/shepherd/pkg/clientbase"
 )
 
-func (p *RTBTestSuite) TestCannotCreateFeature() {
+// TestCannotCreateFeature tests that neither admins nor standard users can create features.
+func (p *RBACTestSuite) TestCannotCreateFeature() {
 	client := p.newSubSession()
 
 	// Create a standard user.
@@ -37,7 +38,8 @@ func (p *RTBTestSuite) TestCannotCreateFeature() {
 	p.Require().Equal(http.StatusMethodNotAllowed, apiErr.StatusCode)
 }
 
-func (p *RTBTestSuite) TestCanListFeatures() {
+// TestCanListFeatures tests that both admins and standard users can list features.
+func (p *RBACTestSuite) TestCanListFeatures() {
 	client := p.newSubSession()
 
 	// Create a standard user.
