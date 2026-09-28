@@ -93,14 +93,14 @@ setup.
 ```go
 type RBACTestSuite struct {
 	suite.Suite
-	client              *rancher.Client
-	session             *session.Session
-	project             *management.Project // suite-shared fixture
-	downstreamClusterID string
+	client    *rancher.Client
+	session   *session.Session
+	project   *management.Project // suite-shared fixture
+	clusterID string              // cluster under test; "local" is Rancher's own cluster, not a downstream
 }
 
 func (p *RBACTestSuite) SetupSuite() {
-	p.downstreamClusterID = "local"
+	p.clusterID = "local"
 	testSession := session.NewSession()
 	p.session = testSession
 
@@ -109,7 +109,7 @@ func (p *RBACTestSuite) SetupSuite() {
 	p.client = client
 
 	testProject, err := client.Management.Project.Create(&management.Project{
-		ClusterID: p.downstreamClusterID,
+		ClusterID: p.clusterID,
 		Name:      namegen.AppendRandomString("rbac-suite-"),
 	})
 	p.Require().NoError(err)
@@ -310,7 +310,7 @@ func (p *RBACTestSuite) createUser(client *rancher.Client, prefix, globalRole st
 // NOT a valid pattern (rtbs_test.go had this until the rbac/ audit inlined it):
 func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Eventually(func() bool { ... }, ...) // asserts the actual
-	_, err := userClient.Management.Cluster.ByID(p.downstreamClusterID)      // behavior under test —
+	_, err := userClient.Management.Cluster.ByID(p.clusterID)                // behavior under test —
 	p.Require().Error(err)                                                  // must be inline instead.
 }
 ```

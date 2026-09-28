@@ -1,45 +1,30 @@
-package integration
+package authconfigs
 
 import (
 	"context"
 	"errors"
 	"net/http"
-	"testing"
 	"time"
 
-	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/pkg/clientbase"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type AuthConfigTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
-}
-
-func (s *AuthConfigTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *AuthConfigTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
+// authProviderCleanupAnnotation is set to "unlocked" by the auth config controller once it has seen
+// a provider enabled; only then does disabling the provider reset its config and delete its secrets.
+const authProviderCleanupAnnotation = "management.cattle.io/auth-provider-cleanup"
 
 // TestAuthConfigsExistAndCannotBeDeleted verifies that the expected set of auth
 // config types are returned by the API, and that attempting to delete any of
 // them returns 405 Method Not Allowed.
 func (s *AuthConfigTestSuite) TestAuthConfigsExistAndCannotBeDeleted() {
-	configs, err := s.client.Management.AuthConfig.List(nil)
+	client := s.newSubSession()
+
+	configs, err := client.Management.AuthConfig.List(nil)
 	s.Require().NoError(err)
 
 	expectedTypes := map[string]bool{
@@ -79,7 +64,7 @@ func (s *AuthConfigTestSuite) TestAuthConfigsExistAndCannotBeDeleted() {
 	// Verify that deleting any auth config returns 405.
 	for _, config := range configs.Data {
 		c := config
-		err := s.client.Management.AuthConfig.Delete(&c)
+		err := client.Management.AuthConfig.Delete(&c)
 		s.Require().Error(err, "expected error deleting auth config %s", c.Type)
 
 		var apiErr *clientbase.APIError
@@ -91,7 +76,9 @@ func (s *AuthConfigTestSuite) TestAuthConfigsExistAndCannotBeDeleted() {
 // TestAuthConfigActions verifies that each auth config type exposes the
 // expected set of actions (testAndApply, configureTest, testAndEnable).
 func (s *AuthConfigTestSuite) TestAuthConfigActions() {
-	configs, err := s.client.Management.AuthConfig.List(nil)
+	client := s.newSubSession()
+
+	configs, err := client.Management.AuthConfig.List(nil)
 	s.Require().NoError(err)
 
 	configMap := map[string]management.AuthConfig{}
@@ -158,48 +145,61 @@ func (s *AuthConfigTestSuite) TestAuthConfigActions() {
 // namespace, and that secrets for other unconfigured SAML providers are not
 // created.
 func (s *AuthConfigTestSuite) TestAuthConfigSecrets() {
-	pingConfig, err := s.client.Management.AuthConfig.ByID("ping")
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
-	// Enable the config and set the spKey — the controller should create a
+	pingConfig, err := client.Management.AuthConfig.ByID("ping")
+	s.Require().NoError(err)
+	if pingConfig.Enabled {
+		s.T().Skip("ping auth is enabled in this environment; this test would overwrite its config and then reset it")
+	}
+
+	dynamicClient, err := client.GetDownStreamClusterClient(s.clusterID)
+	s.Require().NoError(err)
+	secrets := dynamicClient.Resource(corev1.SchemeGroupVersion.WithResource("secrets")).Namespace("cattle-global-data")
+
+	// Enable the config and set the spKey — the API stores the spKey in a
 	// secret named "pingconfig-spkey" in the cattle-global-data namespace.
-	_, err = s.client.Management.AuthConfig.Update(pingConfig, map[string]any{
+	_, err = client.Management.AuthConfig.Update(pingConfig, map[string]any{
 		"spKey":   "-----BEGIN PRIVATE KEY-----",
 		"enabled": true,
 	})
 	s.Require().NoError(err)
 
+	// The session can't undo an update, and the secret is created indirectly. Disabling an
+	// unlocked provider makes Rancher reset its config (clearing spKey) and delete its secrets.
+	t := s.T()
 	s.T().Cleanup(func() {
-		// Disable the config after the test.
-		current, err := s.client.Management.AuthConfig.ByID("ping")
-		if err == nil {
-			_, _ = s.client.Management.AuthConfig.Update(current, map[string]any{
-				"enabled": false,
-			})
+		current, err := client.Management.AuthConfig.ByID("ping")
+		if !assert.NoError(t, err) {
+			return
 		}
+		_, err = client.Management.AuthConfig.Update(current, map[string]any{
+			"enabled": false,
+		})
+		assert.NoError(t, err)
+		assert.EventuallyWithT(t, func(c *assert.CollectT) {
+			_, err := secrets.Get(context.TODO(), "pingconfig-spkey", metav1.GetOptions{})
+			assert.Truef(c, apierrors.IsNotFound(err), "expected not found, got: %v", err)
+		}, 2*time.Minute, 2*time.Second, "waiting for Rancher to delete the pingconfig-spkey secret")
 	})
 
-	dynamicClient, err := s.client.GetDownStreamClusterClient("local")
-	s.Require().NoError(err)
+	// Rancher only resets a provider on disable once its controller has seen it enabled and unlocked
+	// it. Disabling before then leaves the spKey and its secret behind, so wait for the unlock.
+	s.Require().EventuallyWithT(func(c *assert.CollectT) {
+		current, err := client.Management.AuthConfig.ByID("ping")
+		if !assert.NoError(c, err) {
+			return
+		}
+		assert.Equal(c, "unlocked", current.Annotations[authProviderCleanupAnnotation])
+	}, 2*time.Minute, 2*time.Second, "waiting for the ping auth config to be unlocked for cleanup")
 
-	secretGVR := corev1.SchemeGroupVersion.WithResource("secrets")
-
-	// Wait for the pingconfig-spkey secret to be created.
-	s.Require().Eventually(func() bool {
-		_, err := dynamicClient.Resource(secretGVR).Namespace("cattle-global-data").Get(
-			context.TODO(), "pingconfig-spkey", metav1.GetOptions{})
-		return err == nil
-	}, 1*time.Minute, 2*time.Second, "timed out waiting for pingconfig-spkey secret")
+	_, err = secrets.Get(context.TODO(), "pingconfig-spkey", metav1.GetOptions{})
+	s.Require().NoError(err, "expected the pingconfig-spkey secret to exist")
 
 	// Verify that secrets for other unconfigured SAML providers are NOT created.
 	notExpected := []string{"adfsconfig-spkey", "oktaconfig-spkey", "keycloakconfig-spkey"}
 	for _, name := range notExpected {
-		_, err := dynamicClient.Resource(secretGVR).Namespace("cattle-global-data").Get(
-			context.TODO(), name, metav1.GetOptions{})
-		s.Require().Error(err, "secret %s should not exist", name)
+		_, err := secrets.Get(context.TODO(), name, metav1.GetOptions{})
+		s.Require().Truef(apierrors.IsNotFound(err), "expected secret %s to not exist, got: %v", name, err)
 	}
-}
-
-func TestAuthConfig(t *testing.T) {
-	suite.Run(t, new(AuthConfigTestSuite))
 }
