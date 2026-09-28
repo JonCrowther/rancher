@@ -184,7 +184,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `catalogv2/clusterrepo/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
 | `catalogv2/uiplugin/` | `TestUIPluginTestSuite` | UI plugin extensions | No |
 | `catalogv2/managedcharts/` | `TestRancherManagedChartsTestSuite` | Rancher-managed Helm charts | No |
-| `clusters/` | `TestK8sProxy` | K8s API proxy through Rancher | Yes |
+| `clusters/` | `TestClustersTestSuite` | Cluster defaults and node counts, node/driver schemas, PV and PVC validation, K8s API proxy | Yes (proxy tests only) |
 | `projects/` | `TestResourceQuotaTestSuite` | Namespace resource quotas | No |
 | `projects/` | `TestProjectUserTestSuite` | Project-level user access | No |
 | `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, projects & quotas, impersonation, features | No (uses `local`) |

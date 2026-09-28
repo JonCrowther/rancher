@@ -1,4 +1,4 @@
-package integration
+package clusters
 
 import (
 	"bytes"
@@ -6,46 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"testing"
 
-	"github.com/rancher/shepherd/clients/rancher"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
-	"k8s.io/client-go/rest"
+	"github.com/stretchr/testify/assert"
 )
 
-type PVTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
+func (s *ClustersTestSuite) pvURL() string {
+	return fmt.Sprintf("https://%s/v3/cluster/%s/persistentVolumes",
+		s.client.WranglerContext.RESTConfig.Host, s.clusterID)
 }
 
-func (s *PVTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *PVTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *PVTestSuite) httpClient() *http.Client {
-	httpClient, err := rest.HTTPClientFor(s.client.WranglerContext.RESTConfig)
-	s.Require().NoError(err)
-	return httpClient
-}
-
-func (s *PVTestSuite) pvURL() string {
-	return fmt.Sprintf("https://%s/v3/cluster/local/persistentVolumes",
-		s.client.WranglerContext.RESTConfig.Host)
-}
-
-func (s *PVTestSuite) postPV(httpClient *http.Client, body map[string]any) map[string]any {
+func (s *ClustersTestSuite) postPV(httpClient *http.Client, body map[string]any) map[string]any {
 	b, err := json.Marshal(body)
 	s.Require().NoError(err)
 	resp, err := httpClient.Post(s.pvURL(), "application/json", bytes.NewReader(b))
@@ -60,7 +31,7 @@ func (s *PVTestSuite) postPV(httpClient *http.Client, body map[string]any) map[s
 	return result
 }
 
-func (s *PVTestSuite) putPV(httpClient *http.Client, id string, body map[string]any) map[string]any {
+func (s *ClustersTestSuite) putPV(httpClient *http.Client, id string, body map[string]any) map[string]any {
 	b, err := json.Marshal(body)
 	s.Require().NoError(err)
 	url := fmt.Sprintf("%s/%s", s.pvURL(), id)
@@ -82,15 +53,12 @@ func (s *PVTestSuite) putPV(httpClient *http.Client, id string, body map[string]
 // TestPersistentVolumeUpdate asserts that read-only fields within a
 // persistentVolumeSource cannot be mutated after creation, and that the
 // persistentVolumeSource type itself cannot be changed once set.
-func (s *PVTestSuite) TestPersistentVolumeUpdate() {
-	subSession := s.session.NewSession()
-	defer subSession.Cleanup()
-
+func (s *ClustersTestSuite) TestPersistentVolumeUpdate() {
 	httpClient := s.httpClient()
 
 	name := namegen.AppendRandomString("pv-")
 	pv := s.postPV(httpClient, map[string]any{
-		"clusterId":   "local",
+		"clusterId":   s.clusterID,
 		"name":        name,
 		"accessModes": []string{"ReadWriteOnce"},
 		"capacity":    map[string]any{"storage": "10Gi"},
@@ -106,25 +74,32 @@ func (s *PVTestSuite) TestPersistentVolumeUpdate() {
 	})
 	s.Require().NotNil(pv)
 
-	id := pv["id"].(string)
-	s.T().Cleanup(func() {
+	id, ok := pv["id"].(string)
+	s.Require().Truef(ok, "created PV has no id: %v", pv)
+	// The PV is created through the raw Norman API, which the session doesn't track.
+	t := s.T()
+	t.Cleanup(func() {
 		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/%s", s.pvURL(), id), nil)
-		s.Require().NoError(err)
-		resp, err := httpClient.Do(req)
-		if err == nil {
-			io.ReadAll(resp.Body)
-			resp.Body.Close()
+		if !assert.NoError(t, err) {
+			return
 		}
+		resp, err := httpClient.Do(req)
+		if !assert.NoError(t, err, "failed to delete PV %s", id) {
+			return
+		}
+		resp.Body.Close()
+		assert.Truef(t, resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound,
+			"unexpected status %d deleting PV %s", resp.StatusCode, id)
 	})
 
 	// Fields within the persistentVolumeSource should not be updated.
 	updated := s.putPV(httpClient, id, map[string]any{
 		"cinder": map[string]any{"readOnly": "true"},
 	})
-	cinder := updated["cinder"].(map[string]any)
+	cinder, ok := updated["cinder"].(map[string]any)
+	s.Require().Truef(ok, "updated PV has no cinder source: %v", updated)
 	// readOnly must remain false — it is not updatable.
-	s.False(cinder["readOnly"] == true || cinder["readOnly"] == "true",
-		"cinder.readOnly should not have been updated to true")
+	s.Equal(false, cinder["readOnly"], "cinder.readOnly should not have been updated")
 
 	// The persistentVolumeSource type cannot be changed from cinder to azureFile.
 	updated = s.putPV(httpClient, id, map[string]any{
@@ -136,8 +111,4 @@ func (s *PVTestSuite) TestPersistentVolumeUpdate() {
 	})
 	_, hasAzureFile := updated["azureFile"]
 	s.False(hasAzureFile, "azureFile should not be present after attempting to change PV source type")
-}
-
-func TestPV(t *testing.T) {
-	suite.Run(t, new(PVTestSuite))
 }

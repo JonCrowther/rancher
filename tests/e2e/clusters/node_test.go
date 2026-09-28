@@ -1,4 +1,4 @@
-package integration
+package clusters
 
 import (
 	"encoding/json"
@@ -6,46 +6,24 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"testing"
-
-	"github.com/rancher/shepherd/clients/rancher"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
-	"k8s.io/client-go/rest"
 )
 
-type NodeTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
+type nodeSchema struct {
+	CollectionMethods []string `json:"collectionMethods"`
+	ResourceMethods   []string `json:"resourceMethods"`
+	ResourceFields    map[string]struct {
+		Create bool `json:"create"`
+		Update bool `json:"update"`
+	} `json:"resourceFields"`
 }
 
-func (s *NodeTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *NodeTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *NodeTestSuite) httpClient() *http.Client {
-	httpClient, err := rest.HTTPClientFor(s.client.WranglerContext.RESTConfig)
-	s.Require().NoError(err)
-	return httpClient
-}
-
-func (s *NodeTestSuite) schemaURL(typeName string) string {
+func (s *ClustersTestSuite) schemaURL(typeName string) string {
 	return fmt.Sprintf("https://%s/v3/schemas/%s",
 		s.client.WranglerContext.RESTConfig.Host, typeName)
 }
 
 // fetchSchema retrieves and unmarshals a Norman schema by type name.
-func (s *NodeTestSuite) fetchSchema(typeName string) nodeSchema {
+func (s *ClustersTestSuite) fetchSchema(typeName string) nodeSchema {
 	resp, err := s.httpClient().Get(s.schemaURL(typeName))
 	s.Require().NoError(err)
 	body, err := io.ReadAll(resp.Body)
@@ -58,20 +36,11 @@ func (s *NodeTestSuite) fetchSchema(typeName string) nodeSchema {
 	return sc
 }
 
-type nodeSchema struct {
-	CollectionMethods []string `json:"collectionMethods"`
-	ResourceMethods   []string `json:"resourceMethods"`
-	ResourceFields    map[string]struct {
-		Create bool `json:"create"`
-		Update bool `json:"update"`
-	} `json:"resourceFields"`
-}
-
 // TestNodeFields verifies that the Norman management schema for the node type
 // exposes full CRUD access and that every explicitly named field has the
 // expected create/update permissions. Fields whose names end with "Config"
 // are expected to be create-only (cr), except customConfig which is (cru).
-func (s *NodeTestSuite) TestNodeFields() {
+func (s *ClustersTestSuite) TestNodeFields() {
 	sc := s.fetchSchema("node")
 
 	// Verify CRUD methods.
@@ -137,6 +106,7 @@ func (s *NodeTestSuite) TestNodeFields() {
 	}
 
 	// Fields ending in "Config" should be cr, except customConfig which is cru.
+	s.Contains(sc.ResourceFields, "customConfig", "expected field \"customConfig\" in node schema")
 	for fieldName, field := range sc.ResourceFields {
 		if !strings.HasSuffix(fieldName, "Config") {
 			continue
@@ -154,12 +124,14 @@ func (s *NodeTestSuite) TestNodeFields() {
 // TestNodeDriverSchema asserts that the amazonec2config, digitaloceanconfig, and
 // azureconfig schemas do not expose sensitive path fields that could allow
 // local filesystem access.
-func (s *NodeTestSuite) TestNodeDriverSchema() {
+func (s *ClustersTestSuite) TestNodeDriverSchema() {
 	drivers := []string{"amazonec2config", "digitaloceanconfig", "azureconfig"}
 	badFields := []string{"sshKeypath", "sshKeyPath", "existingKeyPath"}
 
 	for _, driver := range drivers {
 		sc := s.fetchSchema(driver)
+		// A schema with no fields would pass the checks below without testing anything.
+		s.Require().NotEmptyf(sc.ResourceFields, "schema %s has no resource fields", driver)
 		for _, field := range badFields {
 			_, present := sc.ResourceFields[field]
 			s.Falsef(present, "driver %s should not expose field %q", driver, field)
@@ -169,7 +141,7 @@ func (s *NodeTestSuite) TestNodeDriverSchema() {
 
 // TestAmazonNodeDriverSchema asserts that the amazonec2config schema includes
 // AWS-specific fields required for EBS volume encryption support.
-func (s *NodeTestSuite) TestAmazonNodeDriverSchema() {
+func (s *ClustersTestSuite) TestAmazonNodeDriverSchema() {
 	sc := s.fetchSchema("amazonec2config")
 
 	requiredFields := []string{"encryptEbsVolume"}
@@ -177,8 +149,4 @@ func (s *NodeTestSuite) TestAmazonNodeDriverSchema() {
 		_, present := sc.ResourceFields[field]
 		s.Truef(present, "amazonec2config schema is missing required field %q", field)
 	}
-}
-
-func TestNode(t *testing.T) {
-	suite.Run(t, new(NodeTestSuite))
 }

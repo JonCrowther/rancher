@@ -1,25 +1,21 @@
-package integration
+package clusters
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"testing"
-	"time"
 
 	"github.com/rancher/rancher/tests/e2e/actions/namespaces"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/rest"
 )
 
 var storageClassGVR = schema.GroupVersionResource{
@@ -28,42 +24,17 @@ var storageClassGVR = schema.GroupVersionResource{
 	Resource: "storageclasses",
 }
 
-type PVCTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
+func (s *ClustersTestSuite) storageClassURL() string {
+	return fmt.Sprintf("https://%s/v3/cluster/%s/storageClasses",
+		s.client.WranglerContext.RESTConfig.Host, s.clusterID)
 }
 
-func (s *PVCTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *PVCTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *PVCTestSuite) httpClient() *http.Client {
-	httpClient, err := rest.HTTPClientFor(s.client.WranglerContext.RESTConfig)
-	s.Require().NoError(err)
-	return httpClient
-}
-
-func (s *PVCTestSuite) storageClassURL() string {
-	return fmt.Sprintf("https://%s/v3/cluster/local/storageClasses",
-		s.client.WranglerContext.RESTConfig.Host)
-}
-
-func (s *PVCTestSuite) pvcURL(projectID string) string {
+func (s *ClustersTestSuite) pvcURL(projectID string) string {
 	return fmt.Sprintf("https://%s/v3/project/%s/persistentVolumeClaims",
 		s.client.WranglerContext.RESTConfig.Host, projectID)
 }
 
-func (s *PVCTestSuite) post(httpClient *http.Client, url string, body map[string]any) (map[string]any, int) {
+func (s *ClustersTestSuite) post(httpClient *http.Client, url string, body map[string]any) (map[string]any, int) {
 	b, err := json.Marshal(body)
 	s.Require().NoError(err)
 	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(b))
@@ -72,15 +43,15 @@ func (s *PVCTestSuite) post(httpClient *http.Client, url string, body map[string
 	resp.Body.Close()
 	s.Require().NoError(err)
 	var result map[string]any
-	_ = json.Unmarshal(respBody, &result)
+	s.Require().NoErrorf(json.Unmarshal(respBody, &result), "status %d, body: %s", resp.StatusCode, string(respBody))
 	return result, resp.StatusCode
 }
 
 // createStorageClassDirect uses the k8s dynamic client to create a StorageClass
 // directly, bypassing the Norman API's automatic default-filling of
 // storageaccounttype/skuName parameters.
-func (s *PVCTestSuite) createStorageClassDirect(client *rancher.Client, name, provisioner string, params map[string]any) {
-	dynamicClient, err := client.GetDownStreamClusterClient("local")
+func (s *ClustersTestSuite) createStorageClassDirect(client *rancher.Client, name, provisioner string, params map[string]any) {
+	dynamicClient, err := client.GetDownStreamClusterClient(s.clusterID)
 	s.Require().NoError(err)
 
 	obj := &unstructured.Unstructured{
@@ -95,20 +66,16 @@ func (s *PVCTestSuite) createStorageClassDirect(client *rancher.Client, name, pr
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err = dynamicClient.Resource(storageClassGVR).Create(ctx, obj, metav1.CreateOptions{})
+	_, err = dynamicClient.Resource(storageClassGVR).Create(s.T().Context(), obj, metav1.CreateOptions{})
 	s.Require().NoError(err)
-
-	s.T().Cleanup(func() {
-		_ = dynamicClient.Resource(storageClassGVR).Delete(
-			context.Background(), name, metav1.DeleteOptions{})
-	})
 }
 
-// createStorageClassNorman creates a StorageClass via the Norman cluster API.
-func (s *PVCTestSuite) createStorageClassNorman(httpClient *http.Client, name, provisioner string, params map[string]any) string {
+// createStorageClassNorman creates a StorageClass via the Norman cluster API. The session doesn't
+// track raw Norman creates, so this registers a cleanup that deletes it through the k8s API.
+func (s *ClustersTestSuite) createStorageClassNorman(client *rancher.Client, httpClient *http.Client, name, provisioner string, params map[string]any) string {
+	dynamicClient, err := client.GetDownStreamClusterClient(s.clusterID)
+	s.Require().NoError(err)
+
 	body := map[string]any{
 		"name":        name,
 		"provisioner": provisioner,
@@ -116,8 +83,18 @@ func (s *PVCTestSuite) createStorageClassNorman(httpClient *http.Client, name, p
 	}
 	result, status := s.post(httpClient, s.storageClassURL(), body)
 	s.Require().Truef(status >= 200 && status < 300,
-		"unexpected status %d creating StorageClass", status)
-	return result["name"].(string)
+		"unexpected status %d creating StorageClass: %v", status, result)
+	scName, ok := result["name"].(string)
+	s.Require().Truef(ok, "created StorageClass has no name: %v", result)
+
+	t := s.T()
+	t.Cleanup(func() {
+		err := dynamicClient.Resource(storageClassGVR).Delete(t.Context(), scName, metav1.DeleteOptions{})
+		if !apierrors.IsNotFound(err) {
+			assert.NoError(t, err, "failed to delete StorageClass %s", scName)
+		}
+	})
+	return scName
 }
 
 // TestCannotCreateAzureNoAccountStorageType asserts that a PVC referencing a
@@ -126,15 +103,11 @@ func (s *PVCTestSuite) createStorageClassNorman(httpClient *http.Client, name, p
 //
 // The StorageClass is created via the k8s dynamic client to bypass Norman's
 // automatic default-filling of those parameters.
-func (s *PVCTestSuite) TestCannotCreateAzureNoAccountStorageType() {
-	subSession := s.session.NewSession()
-	defer subSession.Cleanup()
-
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+func (s *ClustersTestSuite) TestCannotCreateAzureNoAccountStorageType() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
-		ClusterID: "local",
+		ClusterID: s.clusterID,
 		Name:      namegen.AppendRandomString("project-"),
 	})
 	s.Require().NoError(err)
@@ -161,35 +134,31 @@ func (s *PVCTestSuite) TestCannotCreateAzureNoAccountStorageType() {
 		},
 	})
 
-	s.Equal(http.StatusUnprocessableEntity, status)
-	if msg, ok := result["message"].(string); ok {
-		s.Contains(msg, "must provide storageaccounttype or skuName")
-	}
+	s.Require().Equalf(http.StatusUnprocessableEntity, status, "response: %v", result)
+	s.Contains(result["message"], "must provide storageaccounttype or skuName")
 }
 
 // TestCanCreateAzureAnyAccountStorageType asserts that a PVC referencing a
 // StorageClass that has either storageaccounttype or skuName set can be
 // successfully created.
-func (s *PVCTestSuite) TestCanCreateAzureAnyAccountStorageType() {
-	subSession := s.session.NewSession()
-	defer subSession.Cleanup()
-
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+func (s *ClustersTestSuite) TestCanCreateAzureAnyAccountStorageType() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
-		ClusterID: "local",
+		ClusterID: s.clusterID,
 		Name:      namegen.AppendRandomString("project-"),
 	})
 	s.Require().NoError(err)
 
+	// The PVCs are created through the raw Norman API, which the session doesn't track; deleting
+	// this namespace at cleanup removes them.
 	ns, err := namespaces.CreateNamespace(client, namegen.AppendRandomString("ns-"), "", map[string]string{}, map[string]string{}, project)
 	s.Require().NoError(err)
 
 	httpClient := s.httpClient()
 
 	// Try with storageaccounttype.
-	sc1Name := s.createStorageClassNorman(httpClient,
+	sc1Name := s.createStorageClassNorman(client, httpClient,
 		namegen.AppendRandomString("sc-"),
 		"kubernetes.io/azure-disk",
 		map[string]any{"storageaccounttype": "asdf"},
@@ -206,21 +175,9 @@ func (s *PVCTestSuite) TestCanCreateAzureAnyAccountStorageType() {
 	})
 	s.Truef(status >= 200 && status < 300,
 		"unexpected status %d creating PVC with storageaccounttype: %v", status, result)
-	if pvcID, ok := result["id"].(string); ok {
-		s.T().Cleanup(func() {
-			req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/%s", s.pvcURL(project.ID), pvcID), nil)
-			if err == nil {
-				resp, err := httpClient.Do(req)
-				if err == nil {
-					io.ReadAll(resp.Body)
-					resp.Body.Close()
-				}
-			}
-		})
-	}
 
 	// Try with skuName.
-	sc2Name := s.createStorageClassNorman(httpClient,
+	sc2Name := s.createStorageClassNorman(client, httpClient,
 		namegen.AppendRandomString("sc-"),
 		"kubernetes.io/azure-disk",
 		map[string]any{"skuName": "asdf"},
@@ -237,35 +194,21 @@ func (s *PVCTestSuite) TestCanCreateAzureAnyAccountStorageType() {
 	})
 	s.Truef(status >= 200 && status < 300,
 		"unexpected status %d creating PVC with skuName: %v", status, result)
-	if pvcID, ok := result["id"].(string); ok {
-		s.T().Cleanup(func() {
-			req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/%s", s.pvcURL(project.ID), pvcID), nil)
-			if err == nil {
-				resp, err := httpClient.Do(req)
-				if err == nil {
-					io.ReadAll(resp.Body)
-					resp.Body.Close()
-				}
-			}
-		})
-	}
 }
 
 // TestCanCreatePVCNoStorageNoVol asserts that a PVC with no storage class and
 // no volume reference can be created and begins in the "pending" state.
-func (s *PVCTestSuite) TestCanCreatePVCNoStorageNoVol() {
-	subSession := s.session.NewSession()
-	defer subSession.Cleanup()
-
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+func (s *ClustersTestSuite) TestCanCreatePVCNoStorageNoVol() {
+	client := s.newSubSession()
 
 	project, err := client.Management.Project.Create(&management.Project{
-		ClusterID: "local",
+		ClusterID: s.clusterID,
 		Name:      namegen.AppendRandomString("project-"),
 	})
 	s.Require().NoError(err)
 
+	// The PVC is created through the raw Norman API, which the session doesn't track; deleting
+	// this namespace at cleanup removes it.
 	ns, err := namespaces.CreateNamespace(client, namegen.AppendRandomString("ns-"), "", map[string]string{}, map[string]string{}, project)
 	s.Require().NoError(err)
 
@@ -280,12 +223,7 @@ func (s *PVCTestSuite) TestCanCreatePVCNoStorageNoVol() {
 		},
 	})
 
-	s.Truef(status >= 200 && status < 300,
+	s.Require().Truef(status >= 200 && status < 300,
 		"unexpected status %d creating PVC: %v", status, result)
-	s.NotNil(result)
 	s.Equal("pending", result["state"])
-}
-
-func TestPVC(t *testing.T) {
-	suite.Run(t, new(PVCTestSuite))
 }
