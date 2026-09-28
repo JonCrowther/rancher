@@ -25,7 +25,7 @@ func init() {
 }
 
 // RBACTestSuite covers Rancher's RBAC behavior: role templates and their bindings, global roles,
-// default role assignment, project access, impersonation, and features. Its tests are
+// default role assignment, project access and quotas, impersonation, and features. Its tests are
 // split across the files in this package by topic; this file holds only the shared setup and helpers.
 type RBACTestSuite struct {
 	suite.Suite
@@ -45,11 +45,9 @@ func (p *RBACTestSuite) SetupSuite() {
 
 	p.client = client
 
-	// Shared by every test that doesn't need an isolated project. Created through the suite session,
-	// so TearDownSuite's session cleanup deletes it.
 	projectConfig := &management.Project{
 		ClusterID: p.downstreamClusterID,
-		Name:      namegen.AppendRandomString("rbac-suite-"),
+		Name:      "TestProject",
 	}
 
 	testProject, err := client.Management.Project.Create(projectConfig)
@@ -59,6 +57,11 @@ func (p *RBACTestSuite) SetupSuite() {
 }
 
 func (p *RBACTestSuite) TearDownSuite() {
+	client, err := p.client.WithSession(p.session)
+	p.Require().NoError(err)
+
+	err = client.Management.Project.Delete(p.project)
+	p.Require().NoError(err)
 	p.session.Cleanup()
 }
 

@@ -181,17 +181,18 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 
 | Directory | Test Function | What It Tests | Downstream Required? |
 |---|---|---|---|
-| `catalogv2/charts/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | No (uses `local`) |
-| `catalogv2/clusterrepo/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
-| `catalogv2/uiplugin/` | `TestUIPluginTestSuite` | UI plugin extensions | No |
-| `catalogv2/managedcharts/` | `TestRancherManagedChartsTestSuite` | Rancher-managed Helm charts | No |
-| `clusters/` | `TestClustersTestSuite` | Cluster defaults and node counts, node/driver schemas, PV and PVC validation, K8s API proxy | Yes (proxy tests only) |
-| `projects/` | `TestProjectsTestSuite` | Namespace creation by project members/owners, project resource quota validation, propagation and usage, System project and system namespaces | No (uses `local`) |
-| `settings/` | `TestSettingsTestSuite` | Settings API: read-only `cacerts` protection, create/update, update-link visibility | No |
-| `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, project access, impersonation, features | No (uses `local`) |
-| `steveapi/secrets/` | `TestSecretsTestSuite` | Steve secrets API: listing (filters, sorting, paging, summaries, project/namespace scoping) per user access, CRUD, links | No (uses `local`) |
-| `steveapi/extension/` | `TestExtensionAPITestSuite` | Extension API server: discovery/OpenAPI auth, endpoint authorization, kubeconfig and selfuser create/update/delete through Steve | No (uses `local`) |
-| `users/` | `TestUsersTestSuite` | Users API protections: no self-delete or self-deactivate, password rules (not the username, minimum length) | No |
+| `catalogv2/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | Yes |
+| `catalogv2/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
+| `catalogv2/` | `TestSystemChartsVersionSuite` | System chart version constraints | No |
+| `catalogv2/` | `TestUIPluginSuite` | UI plugin extensions | No |
+| `catalogv2/` | `TestRancherManagedChartsSuite` | Rancher-managed Helm charts | No |
+| `clusters/` | `TestK8sProxy` | K8s API proxy through Rancher | Yes |
+| `projects/` | `TestResourceQuotaTestSuite` | Namespace resource quotas | No |
+| `projects/` | `TestProjectUserTestSuite` | Project-level user access | No |
+| `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, projects & quotas, impersonation, features | No (uses `local`) |
+| `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
+| `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
+| `users/` | `TestUserTestSuite` | User CRUD operations | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
 | `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
 | `tokens/` | `TestTokensTestSuite` | Current token, websocket origin check, API token max TTL, kubeconfig login token TTL and expiry | No |

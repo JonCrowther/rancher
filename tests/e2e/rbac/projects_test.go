@@ -2,10 +2,12 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/rancher/norman/types"
 	extnamespaces "github.com/rancher/rancher/tests/e2e/actions/kubeapi/namespaces"
 	extrbac "github.com/rancher/rancher/tests/e2e/actions/kubeapi/rbac"
 	"github.com/rancher/rancher/tests/e2e/actions/kubeapi/secrets"
@@ -244,4 +246,104 @@ func (p *RBACTestSuite) TestReadOnlyCannotMoveNamespace() {
 	_, err = dynamicClient.Resource(nsGVR).Patch(context.TODO(), ns.Name, k8stypes.MergePatchType, []byte(patchPayload), metav1.PatchOptions{})
 	p.Require().Error(err)
 	p.Require().True(apierrors.IsForbidden(err), "expected forbidden, got: %v", err)
+}
+
+// TestSystemProjectCreated tests that the Default and System projects exist in the cluster and
+// carry their identifying labels.
+func (p *RBACTestSuite) TestSystemProjectCreated() {
+	client := p.newSubSession()
+
+	projects, err := client.Management.Project.List(&types.ListOpts{
+		Filters: map[string]any{
+			"clusterId": p.downstreamClusterID,
+		},
+	})
+	p.Require().NoError(err)
+
+	systemProjectLabel := "authz.management.cattle.io/system-project"
+	defaultProjectLabel := "authz.management.cattle.io/default-project"
+
+	initialProjects := map[string]string{
+		"Default": defaultProjectLabel,
+		"System":  systemProjectLabel,
+	}
+
+	var requiredProjects []string
+	for _, project := range projects.Data {
+		if label, ok := initialProjects[project.Name]; ok {
+			p.Require().Equal("true", project.Labels[label])
+			requiredProjects = append(requiredProjects, project.Name)
+		}
+	}
+
+	p.Require().Len(requiredProjects, len(initialProjects))
+}
+
+// TestSystemProjectCannotBeDeleted tests that deleting the System project is rejected with a 405.
+func (p *RBACTestSuite) TestSystemProjectCannotBeDeleted() {
+	client := p.newSubSession()
+
+	projects, err := client.Management.Project.List(&types.ListOpts{
+		Filters: map[string]any{
+			"clusterId": p.downstreamClusterID,
+		},
+	})
+	p.Require().NoError(err)
+
+	var systemProject management.Project
+	found := false
+	for _, project := range projects.Data {
+		if project.Name == "System" {
+			systemProject = project
+			found = true
+			break
+		}
+	}
+	p.Require().True(found, "System project not found")
+
+	// Attempting to delete the System project should return 405.
+	err = client.Management.Project.Delete(&systemProject)
+	p.Require().Error(err)
+
+	var apiErr *clientbase.APIError
+	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
+	p.Require().Equal(http.StatusMethodNotAllowed, apiErr.StatusCode)
+	p.Require().Contains(apiErr.Body, "System Project cannot be deleted")
+}
+
+// TestSystemNamespacesDefaultServiceAccount tests that the default service account in every system
+// namespace except kube-system has automountServiceAccountToken disabled.
+func (p *RBACTestSuite) TestSystemNamespacesDefaultServiceAccount() {
+	client := p.newSubSession()
+
+	setting, err := client.Management.Setting.ByID("system-namespaces")
+	p.Require().NoError(err)
+
+	systemNamespaces := make(map[string]any)
+	for ns := range strings.SplitSeq(setting.Value, ",") {
+		trimmed := strings.TrimSpace(ns)
+		if trimmed != "" {
+			systemNamespaces[trimmed] = true
+		}
+	}
+
+	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
+	p.Require().NoError(err)
+
+	saGVR := corev1.SchemeGroupVersion.WithResource("serviceaccounts")
+
+	saList, err := dynamicClient.Resource(saGVR).Namespace("").List(context.TODO(), metav1.ListOptions{
+		FieldSelector: "metadata.name=default",
+	})
+	p.Require().NoError(err)
+
+	for _, sa := range saList.Items {
+		ns := sa.GetNamespace()
+		if _, ok := systemNamespaces[ns]; !ok || ns == "kube-system" {
+			continue
+		}
+		automount, found, _ := unstructured.NestedBool(sa.Object, "automountServiceAccountToken")
+		p.Require().True(found, fmt.Sprintf("automountServiceAccountToken not found for service account %s in namespace %s", sa.GetName(), ns))
+		p.Require().False(automount, fmt.Sprintf("automountServiceAccountToken should be false for service account %s in namespace %s", sa.GetName(), ns))
+	}
 }

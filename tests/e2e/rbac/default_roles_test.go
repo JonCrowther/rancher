@@ -17,9 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// ensureClusterRolesExist ensures the given ClusterRoles exist in the downstream cluster, creating
-// them if necessary. Roles are created through the client's session, which deletes them when the
-// session is cleaned up.
+// ensureClusterRolesExist ensures the given ClusterRoles exist in the downstream cluster,
+// creating them if necessary, and registers test cleanup to delete any created roles.
 func (p *RBACTestSuite) ensureClusterRolesExist(client *rancher.Client, names []string) {
 	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
 	p.Require().NoError(err)
