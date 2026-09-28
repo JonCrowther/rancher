@@ -109,7 +109,7 @@ export CATTLE_TEST_CONFIG=$(pwd)/tests/e2e/config.yaml
 go test -v -timeout 30m -failfast -p 1 ./tests/e2e/...
 
 # Run a specific test suite
-go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/
+go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/charts/
 
 # Run a specific test within a suite
 go test -v -count=1 -run TestRBACTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
@@ -180,11 +180,10 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 
 | Directory | Test Function | What It Tests | Downstream Required? |
 |---|---|---|---|
-| `catalogv2/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | Yes |
-| `catalogv2/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
-| `catalogv2/` | `TestSystemChartsVersionSuite` | System chart version constraints | No |
-| `catalogv2/` | `TestUIPluginSuite` | UI plugin extensions | No |
-| `catalogv2/` | `TestRancherManagedChartsSuite` | Rancher-managed Helm charts | No |
+| `catalogv2/charts/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | Yes |
+| `catalogv2/clusterrepo/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
+| `catalogv2/uiplugin/` | `TestUIPluginTestSuite` | UI plugin extensions | No |
+| `catalogv2/managedcharts/` | `TestRancherManagedChartsTestSuite` | Rancher-managed Helm charts | No |
 | `clusters/` | `TestK8sProxy` | K8s API proxy through Rancher | Yes |
 | `projects/` | `TestResourceQuotaTestSuite` | Namespace resource quotas | No |
 | `projects/` | `TestProjectUserTestSuite` | Project-level user access | No |

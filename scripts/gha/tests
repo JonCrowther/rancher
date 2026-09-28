@@ -132,7 +132,7 @@ echo "Waiting up to 5 minutes for rancher-turtles deployment"
     && kubectl rollout status -w -n cattle-turtles-system deploy/rancher-turtles-controller-manager &>/dev/null"
 
 echo Running integrationsetup
-export CATTLE_TEST_CONFIG=$(pwd)/tests/e2e/config.yaml # used by integration tests and test setup
+export CATTLE_TEST_CONFIG=$(pwd)/tests/e2e/config.yaml # used by e2e tests and test setup
 # Wait for the background build to finish before using integrationsetup and the
 # precompiled test binaries. It usually completed during the waits above. On
 # failure we log but don't abort: `go test` below will recompile and surface the

@@ -1,4 +1,4 @@
-package integration
+package managedcharts
 
 import (
 	"bytes"
@@ -8,112 +8,67 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	rv1 "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
-	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-	"github.com/rancher/shepherd/clients/rancher"
 	"github.com/rancher/shepherd/clients/rancher/catalog"
 	client "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
-	stevev1 "github.com/rancher/shepherd/clients/rancher/v1"
-	"github.com/rancher/shepherd/extensions/kubeconfig"
-	"github.com/rancher/shepherd/pkg/api/steve/catalog/types"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
 	"helm.sh/helm/v4/pkg/repo/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/kubernetes"
-	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/util/retry"
 )
 
 const smallForkURL = "https://github.com/rancher/charts-small-fork"
 const smallForkClusterRepoName = "rancher-charts-small-fork"
 
-var propagation = metav1.DeletePropagationForeground
+var PollInterval = time.Duration(500 * time.Millisecond)
 
-type RancherManagedChartsTest struct {
-	suite.Suite
-	client           *rancher.Client
-	session          *session.Session
-	restClientGetter genericclioptions.RESTClientGetter
-	catalogClient    *catalog.Client
-	cluster          *client.Cluster
-	corev1           corev1.CoreV1Interface
-	originalBranch   string
-	originalGitRepo  string
+// resetOnCleanup registers a cleanup that puts the local cluster, the rancher-charts repo and the AKS
+// operator releases back the way SetupSuite left them, so the next test starts from the same state
+// even if this one fails mid-way. The operator is uninstalled last because restoring rancher-charts
+// makes Rancher re-run its system chart installs, which can reinstall it.
+func (w *RancherManagedChartsTestSuite) resetOnCleanup() {
+	t := w.T()
+	t.Cleanup(func() {
+		assert.NoError(t, w.resetManagementCluster(), "failed to remove the AKS config from the local cluster")
+		assert.NoError(t, w.restoreRancherChartsRepo(), "failed to point rancher-charts back at its original repo")
+		assert.NoError(t, w.uninstallAKSOperator(), "failed to uninstall the AKS operator")
+	})
 }
 
-func (w *RancherManagedChartsTest) TearDownSuite() {
-	w.session.Cleanup()
-	w.Require().NoError(w.updateSetting("system-managed-charts-operation-timeout", "300s"))
-	w.Require().NoError(w.updateSetting("system-feature-chart-refresh-seconds", "21600"))
-}
-
-func (w *RancherManagedChartsTest) SetupSuite() {
-	var err error
-	testSession := session.NewSession()
-	w.session = testSession
-	w.client, err = rancher.NewClient("", testSession)
-	require.NoError(w.T(), err)
-	insecure := true
-	w.client.RancherConfig.Insecure = &insecure
-	w.catalogClient, err = w.client.GetClusterCatalogClient("local")
-	require.NoError(w.T(), err)
-
-	kubeConfig, err := kubeconfig.GetKubeconfig(w.client, "local")
-	require.NoError(w.T(), err)
-
-	restConfig, err := (*kubeConfig).ClientConfig()
-	require.NoError(w.T(), err)
-	//restConfig.Insecure = true
-	cset, err := kubernetes.NewForConfig(restConfig)
-	require.NoError(w.T(), err)
-	w.corev1 = cset.CoreV1()
-
-	w.restClientGetter, err = kubeconfig.NewRestGetter(restConfig, *kubeConfig)
-	require.NoError(w.T(), err)
-	c, err := w.client.Management.Cluster.ByID("local")
-	require.NoError(w.T(), err)
-	w.cluster = c
-	w.Require().NoError(w.updateSetting("system-managed-charts-operation-timeout", "50s"))
-	w.Require().NoError(w.updateSetting("system-feature-chart-refresh-seconds", "21600"))
-	clusterRepo, err := w.catalogClient.ClusterRepos().Get(context.TODO(), "rancher-charts", metav1.GetOptions{})
-	w.Require().NoError(err)
-	w.originalBranch = clusterRepo.Spec.GitBranch
-	w.originalGitRepo = clusterRepo.Spec.GitRepo
-	w.resetManagementCluster()
-}
-
-func (w *RancherManagedChartsTest) resetSettings() {
-	w.resetManagementCluster()
-
-	w.uninstallApp("cattle-system", "rancher-aks-operator-crd")
-	w.uninstallApp("cattle-system", "rancher-aks-operator")
-	clusterRepo, err := w.catalogClient.ClusterRepos().Get(context.TODO(), "rancher-charts", metav1.GetOptions{})
-	w.Require().NoError(err)
-	if clusterRepo.Spec.GitRepo != w.originalGitRepo {
+// restoreRancherChartsRepo points the rancher-charts ClusterRepo back at the repo and branch SetupSuite
+// recorded, and waits for it to download from there.
+func (w *RancherManagedChartsTestSuite) restoreRancherChartsRepo() error {
+	var downloadTime metav1.Time
+	changed := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		clusterRepo, err := w.catalogClient.ClusterRepos().Get(context.TODO(), "rancher-charts", metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if clusterRepo.Spec.GitRepo == w.originalGitRepo && clusterRepo.Spec.GitBranch == w.originalBranch {
+			return nil
+		}
 		clusterRepo.Spec.GitRepo = w.originalGitRepo
 		clusterRepo.Spec.GitBranch = w.originalBranch
-		downloadTime := clusterRepo.Status.DownloadTime
+		downloadTime = clusterRepo.Status.DownloadTime
 		_, err = w.catalogClient.ClusterRepos().Update(context.TODO(), clusterRepo, metav1.UpdateOptions{})
-		w.Require().NoError(err)
-		w.Require().NoError(w.pollUntilDownloaded("rancher-charts", downloadTime))
+		changed = err == nil
+		return err
+	})
+	if err != nil || !changed {
+		return err
 	}
+	return w.pollUntilDownloaded("rancher-charts", downloadTime)
 }
 
-func TestRancherManagedChartsSuite(t *testing.T) {
-	suite.Run(t, new(RancherManagedChartsTest))
-}
-
-func (w *RancherManagedChartsTest) TestInstallChartLatestVersion() {
-	defer w.resetSettings()
+func (w *RancherManagedChartsTestSuite) TestInstallChartLatestVersion() {
+	w.resetOnCleanup()
 	ctx := context.Background()
 
 	clusterRepo, err := w.catalogClient.ClusterRepos().Get(ctx, "rancher-charts", metav1.GetOptions{})
@@ -126,8 +81,11 @@ func (w *RancherManagedChartsTest) TestInstallChartLatestVersion() {
 	w.Require().NoError(w.pollUntilDownloaded("rancher-charts", downloadTime))
 
 	w.Require().NoError(w.updateManagementCluster())
-	app, _, err := w.waitForAksChart(rv1.StatusDeployed, "rancher-aks-operator", 0)
-	w.Require().NoError(err)
+	var app *rv1.App
+	w.Require().Eventually(func() bool {
+		app, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+		return err == nil && app.Spec.Info.Status == rv1.StatusDeployed && app.Spec.Version > 0
+	}, 6*time.Minute, PollInterval, "waiting for rancher-aks-operator to be deployed")
 	w.Require().Equal("104.0.2+up1.9.0", app.Spec.Chart.Metadata.Version)
 
 	latest, err := w.catalogClient.GetLatestChartVersion("rancher-aks-operator", catalog.RancherChartRepo)
@@ -137,8 +95,8 @@ func (w *RancherManagedChartsTest) TestInstallChartLatestVersion() {
 	w.Require().Nil(app.Spec.Chart.Values)
 }
 
-func (w *RancherManagedChartsTest) TestUpgradeChartToLatestVersion() {
-	defer w.resetSettings()
+func (w *RancherManagedChartsTestSuite) TestUpgradeChartToLatestVersion() {
+	w.resetOnCleanup()
 	ctx := context.Background()
 
 	clusterRepo, err := w.catalogClient.ClusterRepos().Get(ctx, "rancher-charts", metav1.GetOptions{})
@@ -161,14 +119,20 @@ func (w *RancherManagedChartsTest) TestUpgradeChartToLatestVersion() {
 	cfgMap, err = w.corev1.ConfigMaps(clusterRepo.Status.IndexConfigMapNamespace).Update(context.TODO(), cfgMap, metav1.UpdateOptions{})
 	w.Require().NoError(err)
 
-	//KWait for config map to be updated
-	w.Require().NoError(w.WaitForConfigMap(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName, originalLatestVersion))
+	// Wait for config map to be updated
+	w.Require().Eventually(func() bool {
+		version, err := w.latestAKSOperatorVersion(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName)
+		return err == nil && version < originalLatestVersion
+	}, 3*time.Minute, time.Second, "waiting for the index to drop rancher-aks-operator %s", originalLatestVersion)
 
 	//Updating the cluster
 	w.Require().NoError(w.updateManagementCluster())
 
-	app, _, err := w.waitForAksChart(rv1.StatusDeployed, "rancher-aks-operator", 0)
-	w.Require().NoError(err)
+	var app *rv1.App
+	w.Require().Eventually(func() bool {
+		app, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+		return err == nil && app.Spec.Info.Status == rv1.StatusDeployed && app.Spec.Version > 0
+	}, 6*time.Minute, PollInterval, "waiting for rancher-aks-operator to be deployed")
 	w.Require().Equal("104.0.1+up1.9.0", app.Spec.Chart.Metadata.Version)
 
 	w.Assert().Greater(originalLatestVersion, app.Spec.Chart.Metadata.Version)
@@ -204,12 +168,14 @@ func (w *RancherManagedChartsTest) TestUpgradeChartToLatestVersion() {
 	w.Require().Nil(app.Spec.Chart.Values)
 }
 
-func (w *RancherManagedChartsTest) TestUpgradeToWorkingVersion() {
-	defer w.resetSettings()
+func (w *RancherManagedChartsTestSuite) TestUpgradeToWorkingVersion() {
+	w.resetOnCleanup()
 	ctx := context.Background()
-	w.Require().Nil(w.cluster.AKSConfig)
-	_, err := w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-charts", metav1.GetOptions{})
-	w.Require().Error(err)
+	cluster, err := w.client.Management.Cluster.ByID(w.clusterID)
+	w.Require().NoError(err)
+	w.Require().Nil(cluster.AKSConfig)
+	_, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+	w.Require().True(errors.IsNotFound(err), "rancher-aks-operator should not be installed before the test, got err: %v", err)
 
 	clusterRepo, err := w.catalogClient.ClusterRepos().Get(ctx, "rancher-charts", metav1.GetOptions{})
 	w.Require().NoError(err)
@@ -229,16 +195,23 @@ func (w *RancherManagedChartsTest) TestUpgradeToWorkingVersion() {
 	cfgMap, err = w.corev1.ConfigMaps(clusterRepo.Status.IndexConfigMapNamespace).Update(context.TODO(), cfgMap, metav1.UpdateOptions{})
 	w.Require().NoError(err)
 
-	//KWait for config map to be updated
-	w.Require().NoError(w.WaitForConfigMap(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName, latestVersion))
+	// Wait for config map to be updated
+	w.Require().Eventually(func() bool {
+		version, err := w.latestAKSOperatorVersion(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName)
+		return err == nil && version < latestVersion
+	}, 3*time.Minute, time.Second, "waiting for the index to drop rancher-aks-operator %s", latestVersion)
 	list, err := w.catalogClient.Operations("cattle-system").List(ctx, metav1.ListOptions{})
 	w.Require().NoError(err)
 	numberOfOps := countNumberOfOperations(list, "rancher-aks-operator", time.Now())
 	//Updating the cluster
 	w.Require().NoError(w.updateManagementCluster())
 
-	app, at, err := w.waitForAksChart(rv1.StatusFailed, "rancher-aks-operator", 0)
-	w.Require().NoError(err)
+	var app *rv1.App
+	w.Require().Eventually(func() bool {
+		app, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+		return err == nil && app.Spec.Info.Status == rv1.StatusFailed && app.Spec.Version > 0
+	}, 6*time.Minute, PollInterval, "waiting for rancher-aks-operator to fail")
+	at := time.Now().Add(-(2 * PollInterval)).UTC()
 	w.Require().Nil(app.Spec.Values)
 	w.Require().Nil(app.Spec.Chart.Values)
 	list, err = w.catalogClient.Operations("cattle-system").List(ctx, metav1.ListOptions{})
@@ -273,8 +246,8 @@ func (w *RancherManagedChartsTest) TestUpgradeToWorkingVersion() {
 	w.Require().Nil(app.Spec.Chart.Values)
 }
 
-func (w *RancherManagedChartsTest) TestUpgradeToBrokenVersion() {
-	defer w.resetSettings()
+func (w *RancherManagedChartsTestSuite) TestUpgradeToBrokenVersion() {
+	w.resetOnCleanup()
 	ctx := context.Background()
 
 	clusterRepo, err := w.catalogClient.ClusterRepos().Get(ctx, "rancher-charts", metav1.GetOptions{})
@@ -296,14 +269,21 @@ func (w *RancherManagedChartsTest) TestUpgradeToBrokenVersion() {
 	cfgMap, err = w.corev1.ConfigMaps(clusterRepo.Status.IndexConfigMapNamespace).Update(context.TODO(), cfgMap, metav1.UpdateOptions{})
 	w.Require().NoError(err)
 
-	//KWait for config map to be updated
-	w.Require().NoError(w.WaitForConfigMap(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName, latestVersion))
+	// Wait for config map to be updated
+	w.Require().Eventually(func() bool {
+		version, err := w.latestAKSOperatorVersion(clusterRepo.Status.IndexConfigMapNamespace, clusterRepo.Status.IndexConfigMapName)
+		return err == nil && version < latestVersion
+	}, 3*time.Minute, time.Second, "waiting for the index to drop rancher-aks-operator %s", latestVersion)
 
 	//Updating the cluster
 	w.Require().NoError(w.updateManagementCluster())
 
-	app, at, err := w.waitForAksChart(rv1.StatusDeployed, "rancher-aks-operator", 0)
-	w.Require().NoError(err)
+	var app *rv1.App
+	w.Require().Eventually(func() bool {
+		app, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+		return err == nil && app.Spec.Info.Status == rv1.StatusDeployed && app.Spec.Version > 0
+	}, 6*time.Minute, PollInterval, "waiting for rancher-aks-operator to be deployed")
+	at := time.Now().Add(-(2 * PollInterval)).UTC()
 	w.Require().Nil(app.Spec.Values)
 	w.Require().Nil(app.Spec.Chart.Values)
 	w.Require().Equal("102.0.0+up1.1.0", app.Spec.Chart.Metadata.Version)
@@ -324,8 +304,12 @@ func (w *RancherManagedChartsTest) TestUpgradeToBrokenVersion() {
 	_, err = w.catalogClient.ClusterRepos().Update(context.TODO(), clusterRepo.DeepCopy(), metav1.UpdateOptions{})
 	w.Require().NoError(err)
 
-	app, at, err = w.waitForAksChart(rv1.StatusFailed, "rancher-aks-operator", app.Spec.Version)
-	w.Require().NoError(err)
+	previousVersion := app.Spec.Version
+	w.Require().Eventually(func() bool {
+		app, err = w.catalogClient.Apps("cattle-system").Get(ctx, "rancher-aks-operator", metav1.GetOptions{})
+		return err == nil && app.Spec.Info.Status == rv1.StatusFailed && app.Spec.Version > previousVersion
+	}, 6*time.Minute, PollInterval, "waiting for the rancher-aks-operator upgrade to fail")
+	at = time.Now().Add(-(2 * PollInterval)).UTC()
 	w.Require().Nil(app.Spec.Values)
 	w.Require().Nil(app.Spec.Chart.Values)
 	list, err = ops.List(ctx, metav1.ListOptions{})
@@ -343,23 +327,33 @@ func countNumberOfOperations(ops *rv1.OperationList, name string, at time.Time) 
 	return count
 }
 
-func (w *RancherManagedChartsTest) WaitForConfigMap(namespace, name, latestVersion string) error {
-	return kwait.Poll(1*time.Second, 3*time.Minute, func() (done bool, err error) {
-		cfgMap, err := w.corev1.ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-		w.Require().NoError(err)
-		gz, err := gzip.NewReader(bytes.NewBuffer(cfgMap.BinaryData["content"]))
-		w.Require().NoError(err)
-		defer gz.Close()
-		data, err := io.ReadAll(gz)
-		w.Require().NoError(err)
-		index := &repo.IndexFile{}
-		w.Require().NoError(json.Unmarshal(data, index))
-		index.SortEntries()
-		return index.Entries["rancher-aks-operator"][0].Version < latestVersion, nil
-	})
+// latestAKSOperatorVersion returns the newest rancher-aks-operator version in the index stored in the given ConfigMap.
+func (w *RancherManagedChartsTestSuite) latestAKSOperatorVersion(namespace, name string) (string, error) {
+	cfgMap, err := w.corev1.ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	gz, err := gzip.NewReader(bytes.NewBuffer(cfgMap.BinaryData["content"]))
+	if err != nil {
+		return "", err
+	}
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return "", err
+	}
+	index := &repo.IndexFile{}
+	if err := json.Unmarshal(data, index); err != nil {
+		return "", err
+	}
+	index.SortEntries()
+	if len(index.Entries["rancher-aks-operator"]) == 0 {
+		return "", fmt.Errorf("no rancher-aks-operator entries in the index in %s/%s", namespace, name)
+	}
+	return index.Entries["rancher-aks-operator"][0].Version, nil
 }
 
-func (w *RancherManagedChartsTest) updateConfigMap(cfgMap *v1.ConfigMap) string {
+func (w *RancherManagedChartsTestSuite) updateConfigMap(cfgMap *v1.ConfigMap) string {
 	gz, err := gzip.NewReader(bytes.NewBuffer(cfgMap.BinaryData["content"]))
 	w.Require().NoError(err)
 	defer gz.Close()
@@ -381,99 +375,24 @@ func (w *RancherManagedChartsTest) updateConfigMap(cfgMap *v1.ConfigMap) string 
 	return latestVersion
 }
 
-func (w *RancherManagedChartsTest) waitForAksChart(status rv1.Status, name string, previousVersion int) (*rv1.App, time.Time, error) {
-	t := 360
-	var app *rv1.App
-	var at time.Time
-	err := kwait.Poll(PollInterval, time.Duration(t)*time.Second, func() (done bool, err error) {
-		app, err = w.catalogClient.Apps("cattle-system").Get(context.TODO(), name, metav1.GetOptions{})
-		e, ok := err.(*errors.StatusError)
-		if ok && errors.IsNotFound(e) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		if app.Spec.Info.Status == status && app.Spec.Version > previousVersion {
-			at = time.Now().Add(-(2 * PollInterval)).UTC()
-			return true, nil
-		}
-		return false, nil
-	})
-	w.Require().NoError(err)
-	return app, at, err
-}
-
-func (w *RancherManagedChartsTest) updateManagementCluster() error {
-	w.cluster.AKSConfig = &client.AKSClusterConfigSpec{}
-	c, err := w.client.Management.Cluster.Replace(w.cluster)
-	w.cluster = c
-	return err
-}
-
-func (w *RancherManagedChartsTest) resetManagementCluster() {
-	w.cluster.AKSConfig = nil
-	w.cluster.AppliedSpec.AKSConfig = nil
-	c, err := w.client.Management.Cluster.Replace(w.cluster)
-	w.Require().NoError(err)
-	err = kwait.Poll(5*time.Second, 2*time.Minute, func() (done bool, err error) {
-		c, err = w.client.Management.Cluster.ByID("local")
-		if err != nil {
-			return false, err
-		}
-		if c.AKSConfig == nil {
-			return true, nil
-		}
-		return false, nil
-	})
-	w.Require().NoError(err)
-	w.cluster = c
-}
-
-func (w *RancherManagedChartsTest) updateSetting(name, value string) error {
-	// Use the Steve client instead of the main one to be able to set a setting's value to an empty string.
-	existing, err := w.client.Steve.SteveType("management.cattle.io.setting").ByID(name)
+// updateManagementCluster gives the local cluster an empty AKS config, which makes Rancher install the AKS operator.
+func (w *RancherManagedChartsTestSuite) updateManagementCluster() error {
+	c, err := w.client.Management.Cluster.ByID(w.clusterID)
 	if err != nil {
 		return err
 	}
-
-	var s v3.Setting
-	if err := stevev1.ConvertToK8sType(existing.JSONResp, &s); err != nil {
-		return err
-	}
-
-	s.Value = value
-	_, err = w.client.Steve.SteveType("management.cattle.io.setting").Update(existing, s)
+	c.AKSConfig = &client.AKSClusterConfigSpec{}
+	_, err = w.client.Management.Cluster.Replace(c)
 	return err
 }
 
-func (w *RancherManagedChartsTest) uninstallApp(namespace, chartName string) {
-	err := kwait.Poll(10*time.Second, 10*time.Minute, func() (done bool, err error) {
-		w.catalogClient.UninstallChart(chartName, namespace, &types.ChartUninstallAction{})
-
-		// Make sure that all helm release secrets are deleted before proceeding.
-		helmReleaseSecretLabels := fmt.Sprintf("name=%s,owner=helm", chartName)
-		secrets, err := w.corev1.Secrets(namespace).List(context.TODO(), metav1.ListOptions{
-			LabelSelector: helmReleaseSecretLabels,
-		})
-		w.Require().NoError(err)
-
-		if len(secrets.Items) == 0 {
-			return true, nil
-		}
-		return false, nil
-	})
-	w.Require().NoError(err)
-}
-
 // pollUntilDownloaded Polls until the ClusterRepo of the given name has been downloaded (by comparing prevDownloadTime against the current DownloadTime)
-func (w *RancherManagedChartsTest) pollUntilDownloaded(ClusterRepoName string, prevDownloadTime metav1.Time) error {
+func (w *RancherManagedChartsTestSuite) pollUntilDownloaded(ClusterRepoName string, prevDownloadTime metav1.Time) error {
 	err := kwait.Poll(PollInterval, time.Minute, func() (done bool, err error) {
 		clusterRepo, err := w.catalogClient.ClusterRepos().Get(context.TODO(), ClusterRepoName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
-		w.Require().NoError(err)
 		if clusterRepo.Name != ClusterRepoName {
 			return false, nil
 		}
@@ -483,18 +402,23 @@ func (w *RancherManagedChartsTest) pollUntilDownloaded(ClusterRepoName string, p
 	return err
 }
 
-func (w *RancherManagedChartsTest) TestServeIcons() {
+func (w *RancherManagedChartsTestSuite) TestServeIcons() {
 	// Clone the git repository at a spcecific location so
 	// that Rancher assumes it as prebuild helm repository.
 	// Since Rancher starts at build/testdata, the LocalDir would
 	// be build/rancher-data.... Also since this test resides in
-	// tests/e2e/catalogv2, the cloneDir would be
-	// ../../../build/rancher-data/...
+	// tests/e2e/catalogv2/managedcharts, the cloneDir would be
+	// ../../../../build/rancher-data/...
+	// The last path element is derived from the ClusterRepo name, so the name can't be randomized.
 	repoURL := "https://github.com/rancher/charts-small-fork"
-	cloneDir := "../../../build/rancher-data/local-catalogs/v2/rancher-charts-small-fork/d39a2f6abd49e537e5015bbe1a4cd4f14919ba1c3353208a7ff6be37ffe00c52"
+	cloneDir := "../../../../build/rancher-data/local-catalogs/v2/rancher-charts-small-fork/d39a2f6abd49e537e5015bbe1a4cd4f14919ba1c3353208a7ff6be37ffe00c52"
 
 	err := os.MkdirAll(cloneDir, os.ModePerm)
 	w.Require().NoError(err)
+	t := w.T()
+	t.Cleanup(func() {
+		assert.NoError(t, os.RemoveAll(cloneDir), "failed to remove %s", cloneDir)
+	})
 
 	_, err = git.PlainClone(cloneDir, false, &git.CloneOptions{
 		URL:   repoURL,
@@ -514,6 +438,13 @@ func (w *RancherManagedChartsTest) TestServeIcons() {
 	)
 	_, err = w.client.Steve.SteveType(catalog.ClusterRepoSteveResourceType).Create(clusterRepoToCreate)
 	w.Require().NoError(err)
+	// The session would only delete the repo at the end of the suite, and this test runs again with the same name.
+	t.Cleanup(func() {
+		err := w.catalogClient.ClusterRepos().Delete(context.Background(), smallForkClusterRepoName, metav1.DeleteOptions{})
+		if !errors.IsNotFound(err) {
+			assert.NoError(t, err, "failed to delete ClusterRepo %s", smallForkClusterRepoName)
+		}
+	})
 	time.Sleep(1 * time.Second)
 
 	w.Require().NoError(w.pollUntilDownloaded(smallForkClusterRepoName, metav1.Time{}))
@@ -527,25 +458,18 @@ func (w *RancherManagedChartsTest) TestServeIcons() {
 	systemCatalog, err := w.client.Management.Setting.ByID("system-catalog")
 	w.Require().NoError(err)
 	w.Assert().Equal("external", systemCatalog.Value)
+	originalSystemCatalog, err := w.settingValue("system-catalog")
+	w.Require().NoError(err)
 
 	// Update settings.SystemCatalog to bundled
 	systemCatalogUpdated, err := w.client.Management.Setting.Update(systemCatalog, map[string]interface{}{"value": "bundled"})
 	w.Require().NoError(err)
+	t.Cleanup(func() {
+		assert.NoError(t, w.updateSetting("system-catalog", originalSystemCatalog), "failed to restore setting system-catalog")
+	})
 	w.Assert().Equal("bundled", systemCatalogUpdated.Value)
 
 	imgLength, err := w.catalogClient.FetchChartIcon(smallForkClusterRepoName, "rancher-compliance")
 	w.Require().NoError(err)
 	w.Assert().Greater(imgLength, 0)
-
-	// Update settings.SystemCatalog to external
-	_, err = w.client.Management.Setting.Update(systemCatalog, map[string]interface{}{"value": "external"})
-	w.Require().NoError(err)
-
-	// Deleting clusterRepo
-	err = w.catalogClient.ClusterRepos().Delete(context.Background(), smallForkClusterRepoName, metav1.DeleteOptions{})
-	w.Require().NoError(err)
-
-	// Delete the cloneDir
-	err = os.RemoveAll(cloneDir)
-	w.Require().NoError(err)
 }
