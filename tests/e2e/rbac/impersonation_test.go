@@ -56,6 +56,16 @@ func (p *RBACTestSuite) TestImpersonationByClusterRole() {
 	err = extauthz.WaitForAllowed(client, p.downstreamClusterID, []*authzv1.ResourceAttributes{impersonateAttr})
 	p.Require().NoError(err)
 
+	// Wait until user1's cluster-member binding is in effect (it grants listing nodes), so the
+	// denial below is caused by the role and not by the binding still propagating.
+	err = extauthz.WaitForAllowed(user1Client, p.downstreamClusterID, []*authzv1.ResourceAttributes{
+		{
+			Verb:     "list",
+			Resource: "nodes",
+		},
+	})
+	p.Require().NoError(err)
+
 	// User1 is a cluster-member which does not grant impersonate.
 	allowed, err := checkAccessAllowed(user1Client, p.downstreamClusterID, impersonateAttr)
 	p.Require().NoError(err)
@@ -88,12 +98,9 @@ func (p *RBACTestSuite) TestImpersonationByClusterRole() {
 	err = scheme.Scheme.Convert(impRole, &cr, nil)
 	p.Require().NoError(err)
 
+	// Created through the sub-session's dynamic client, so the session deletes it.
 	_, err = crResource.Create(context.TODO(), &cr, metav1.CreateOptions{})
 	p.Require().NoError(err)
-	p.T().Cleanup(func() {
-		err := crResource.Delete(context.TODO(), impRoleName, metav1.DeleteOptions{})
-		p.Require().NoError(err)
-	})
 
 	// Create a ClusterRoleBinding binding user1 to the impersonation role.
 	impBindingName := namegen.AppendRandomString("limited-impersonator-binding-")
@@ -119,10 +126,6 @@ func (p *RBACTestSuite) TestImpersonationByClusterRole() {
 
 	_, err = crbResource.Create(context.TODO(), &crb, metav1.CreateOptions{})
 	p.Require().NoError(err)
-	p.T().Cleanup(func() {
-		err := crbResource.Delete(context.TODO(), impBindingName, metav1.DeleteOptions{})
-		p.Require().NoError(err)
-	})
 
 	// User1 should now be able to impersonate user2 specifically.
 	err = extauthz.WaitForAllowed(user1Client, p.downstreamClusterID, []*authzv1.ResourceAttributes{

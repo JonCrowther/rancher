@@ -110,16 +110,13 @@ func (p *RBACTestSuite) SetupSuite() {
 
 	testProject, err := client.Management.Project.Create(&management.Project{
 		ClusterID: p.downstreamClusterID,
-		Name:      "TestProject",
+		Name:      namegen.AppendRandomString("rbac-suite-"),
 	})
 	p.Require().NoError(err)
 	p.project = testProject
 }
 
 func (p *RBACTestSuite) TearDownSuite() {
-	client, err := p.client.WithSession(p.session)
-	p.Require().NoError(err)
-	p.Require().NoError(client.Management.Project.Delete(p.project))
 	p.session.Cleanup()
 }
 
@@ -129,8 +126,10 @@ func TestRBACTestSuite(t *testing.T) {
 ```
 
 Only resources meant to be shared across *every* test in the suite belong in `SetupSuite`. They're
-the one thing that needs manual deletion, in `TearDownSuite`, because they weren't created through
-a sub-session.
+created through the suite session, so `p.session.Cleanup()` in `TearDownSuite` deletes them — no
+manual delete is needed. Give them randomized names so a leaked fixture from an earlier run can't
+collide. Don't put `Require()` calls ahead of `session.Cleanup()` in `TearDownSuite`: a failure there
+skips the cleanup entirely.
 
 A suite is not always confined to the file that declares its struct: `rbac/` is one suite
 (`RBACTestSuite`, declared in `rbac_suite_test.go`) with its test methods spread across topic files
@@ -191,6 +190,27 @@ A generated test must obtain its client via the suite's sub-session helper befor
 anything. Creating a resource through the raw suite-level client instead of a sub-session client is
 a leak — never introduce a new instance of this.
 
+The session tracks every direct create — Norman `client.Management.X.Create(...)` and creates
+through the dynamic client from `client.GetDownStreamClusterClient(...)` alike — and its delete
+ignores 404s. So a manual `T().Cleanup` that deletes a directly-created resource is redundant; don't
+add one. `client.AsUser(...)` shares the parent client's session.
+
+### Reporting errors from a manual cleanup
+
+testify swaps the suite's `T` back to the parent test before `t.Cleanup` callbacks run, so inside a
+cleanup `p.Require()`/`p.Assert()` report against the *suite*, not the test that registered the
+cleanup (and `Require` calls `FailNow` on the wrong `T`). Capture the test's `T` first, and use
+`assert` so every restore step still runs after one fails. Never swallow the error with `_ =`: a
+silent failure leaves shared state mutated for every later test.
+
+```go
+t := p.T()
+t.Cleanup(func() {
+	_, err := client.Management.GlobalRole.Update(gr, map[string]any{"newUserDefault": false})
+	assert.NoError(t, err, "failed to revert newUserDefault on global role %s", gr.ID)
+})
+```
+
 ### Indirectly-created resources need explicit cleanup
 
 Sub-session auto-cleanup only tracks objects created by a direct call on the session-scoped client
@@ -212,7 +232,10 @@ p.Require().NoError(err)
 
 user, err := client.Management.User.ByID(crtb.UserID) // populated once the controller reacts
 p.Require().NoError(err)
-p.T().Cleanup(func() { _ = client.Management.User.Delete(user) })
+t := p.T()
+t.Cleanup(func() {
+	assert.NoError(t, client.Management.User.Delete(user), "failed to delete user %s", user.ID)
+})
 ```
 
 Recognize this pattern whenever the input describes an action that *causes* something to be
@@ -256,8 +279,10 @@ func (p *RBACTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleID
 		p.Require().NoError(err)
 	}
 
-	p.T().Cleanup(func() {
-		// restore every role template's original flag value here
+	t := p.T()
+	t.Cleanup(func() {
+		// restore every role template's original flag value here, reporting each failure with
+		// assert.NoError(t, ...) — see "Reporting errors from a manual cleanup"
 	})
 }
 ```
@@ -282,7 +307,7 @@ func (p *RBACTestSuite) createUser(client *rancher.Client, prefix, globalRole st
 ```
 
 ```go
-// NOT a valid pattern to add, even though a version of it exists in rtbs_test.go today:
+// NOT a valid pattern (rtbs_test.go had this until the rbac/ audit inlined it):
 func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Eventually(func() bool { ... }, ...) // asserts the actual
 	_, err := userClient.Management.Cluster.ByID(p.downstreamClusterID)      // behavior under test —
@@ -290,8 +315,38 @@ func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 }
 ```
 
+When a check needs polling, the helper should be a non-asserting getter that returns the observed
+value and an error, and the test writes its own `Eventually` around it. The pass condition then
+stays visible in the test (e.g. `resourceQuotaHard` and `projectUsedLimit` in
+`rbac/project_quotas_test.go`):
+
+```go
+p.Require().Eventually(func() bool {
+	used, err := p.projectUsedLimit(client, project.ID, "pods")
+	return err == nil && used == "4"
+}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
+```
+
 If two tests need an identical, lengthy check, it gets duplicated inline in both. That's an accepted
 DRY violation, not an oversight.
+
+### Negative checks need a positive precondition and a specific error
+
+A "user cannot do X" check passes trivially if the user's binding simply hasn't propagated yet, or
+if the call failed for an unrelated reason. So:
+
+- Before asserting a denial, wait for something the same binding *does* grant
+  (`extauthz.WaitForAllowed`), which proves the binding is in effect. For example, `read-only`
+  grants listing pods, `cluster-member` grants listing nodes, and the global `user` role grants
+  creating secrets in `cattle-global-data`.
+- Assert the specific failure, not just `Error(err)`: `apierrors.IsForbidden(err)` for k8s API
+  errors, or `errors.As(err, &apiErr)` plus `apiErr.StatusCode` for Norman errors.
+- Poll a denial with `EventuallyWithT` and an `assert.Truef(c, …, "got: %v", err)`, so a
+  timeout reports the last error rather than "Condition never satisfied".
+- When a regression would make the forbidden action actually happen, prove the denial with an
+  access review (`checkAccessAllowed`) instead of attempting it (don't really delete a node from
+  the shared cluster). Likewise, point negative-path creates at low-privilege roles
+  (e.g. `kontainerdrivers-manage`, not `admin`), so an unexpected success doesn't escalate anyone.
 
 ### Four tiers of code reuse
 
@@ -303,7 +358,7 @@ without jumping between files.
    only (e.g. a helper closure used twice within a single test and nowhere else).
 3. **File-local helper** — setup/action (never assertion) shared by several tests *in the same topic
    file* and nowhere else (e.g. `setClusterCreatorDefaults` in `rbac/default_roles_test.go`,
-   `waitForResourceQuota` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
+   `resourceQuotaHard` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
    not in the suite file.
 4. **Suite-level helper** — setup/action (never assertion) shared across tests in *more than one*
    topic file (e.g. `createUser`, `createNamespace`), defined in the suite's `_suite_test.go` file.
@@ -317,10 +372,12 @@ Before writing a new file-local or suite-level helper, check whether an equivale
 
 ### Current known gaps (do not fix as part of this skill)
 
-`rbac/rtbs_test.go` still has the `assertClusterAccessRevoked` helper shown above as a
-counter-example (and `rbac/global_roles_test.go` has a similar `assertKontainerDriverCount`). Both
-are tracked for a separate audit pass. Adding a new test does not require or invite fixing them —
-leave them as-is.
+Directories not yet through the audit may still contain patterns this skill forbids (assertion
+helpers, `_ =` cleanups, bare `Error(err)` negative checks). `rbac/` has been audited. Adding a new
+test does not require or invite fixing existing code elsewhere — leave it as-is. Known open items
+in `rbac/`: the kontainer-driver count of 3 in `TestKontainerDriverVisibilityByGlobalRole` assumes
+a default install, and `TestDefaultSystemProjectRole` has a loop that passes vacuously (marked
+TODO).
 
 ## Workflow
 

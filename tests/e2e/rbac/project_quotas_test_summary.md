@@ -33,7 +33,8 @@ Creates a project without quota, adds a namespace, then updates the project to a
 
 ## `TestNamespaceQuotaExceedsProjectLimit`
 Creates namespace requesting more pods (200) than the project allows (100).
-- Checks a k8s ResourceQuota is created but with zeroed overused resources.
+- Checks a k8s ResourceQuota is created with the overused pods limit set to "0".
+- Checks the project's usedLimit.pods stays "0" (the overused namespace isn't counted).
 
 ## `TestProjectUsedQuotaUpdated`
 Creates a project with quota and a namespace with default quota.

@@ -96,8 +96,12 @@ func CreateNamespace(client *rancher.Client, clusterID, projectName, namespaceNa
 		return nil, err
 	}
 
+	// Delete as admin rather than as the creating client. A non-admin creator loses its access to
+	// the namespace as soon as the namespace starts terminating, so a retried delete as that user
+	// fails with forbidden instead of not found.
 	client.Session.RegisterCleanupFunc(func() error {
-		err := namespaceResource.Delete(context.TODO(), unstructuredResp.GetName(), metav1.DeleteOptions{})
+		adminNamespaceResource := adminDynamicClient.Resource(NamespaceGroupVersionResource).Namespace("")
+		err := adminNamespaceResource.Delete(context.TODO(), unstructuredResp.GetName(), metav1.DeleteOptions{})
 		if errors.IsNotFound(err) {
 			return nil
 		}
@@ -105,7 +109,6 @@ func CreateNamespace(client *rancher.Client, clusterID, projectName, namespaceNa
 			return err
 		}
 
-		adminNamespaceResource := adminDynamicClient.Resource(NamespaceGroupVersionResource).Namespace("")
 		watchInterface, err := adminNamespaceResource.Watch(context.TODO(), metav1.ListOptions{
 			FieldSelector:  "metadata.name=" + unstructuredResp.GetName(),
 			TimeoutSeconds: &defaults.WatchTimeoutSeconds,

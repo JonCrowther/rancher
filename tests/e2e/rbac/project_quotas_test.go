@@ -34,60 +34,61 @@ func (p *RBACTestSuite) createNamespaceWithQuota(client *rancher.Client, projNam
 	return ns
 }
 
-// waitForResourceQuota waits for the Rancher resource quota controller to create a k8s
-// ResourceQuota object in the given namespace (identified by the default-resource-quota label)
-// and returns its spec.hard as a string map.
-func (p *RBACTestSuite) waitForResourceQuota(client *rancher.Client, nsName string) map[string]string {
+// resourceQuotaHard returns spec.hard of the ResourceQuota that the Rancher quota controller
+// creates in the given namespace (identified by the default-resource-quota label). It returns a
+// nil map if the controller hasn't created the ResourceQuota yet.
+func (p *RBACTestSuite) resourceQuotaHard(client *rancher.Client, nsName string) (map[string]string, error) {
 	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
-	p.Require().NoError(err)
+	if err != nil {
+		return nil, err
+	}
 
 	rqGVR := corev1.SchemeGroupVersion.WithResource("resourcequotas")
+	rqList, err := dynamicClient.Resource(rqGVR).Namespace(nsName).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: "resourcequota.management.cattle.io/default-resource-quota=true",
+	})
+	if err != nil || len(rqList.Items) == 0 {
+		return nil, err
+	}
 
-	var hard map[string]string
-	p.Require().Eventually(func() bool {
-		rqList, err := dynamicClient.Resource(rqGVR).Namespace(nsName).List(context.TODO(), metav1.ListOptions{
-			LabelSelector: "resourcequota.management.cattle.io/default-resource-quota=true",
-		})
-		if err != nil || len(rqList.Items) == 0 {
-			return false
-		}
-		specRaw, found, _ := unstructured.NestedMap(rqList.Items[0].Object, "spec", "hard")
-		if !found {
-			return false
-		}
-		hard = make(map[string]string, len(specRaw))
-		for k, v := range specRaw {
-			hard[k] = fmt.Sprintf("%v", v)
-		}
-		return len(hard) > 0
-	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", nsName)
-
-	return hard
+	specRaw, found, err := unstructured.NestedMap(rqList.Items[0].Object, "spec", "hard")
+	if err != nil || !found {
+		return nil, err
+	}
+	hard := make(map[string]string, len(specRaw))
+	for k, v := range specRaw {
+		hard[k] = fmt.Sprintf("%v", v)
+	}
+	return hard, nil
 }
 
-// waitForProjectUsedLimit waits for the project's usedLimit for the given field
-// to equal the expected value.
-func (p *RBACTestSuite) waitForProjectUsedLimit(client *rancher.Client, projectID, field, value string) {
-	p.Require().Eventually(func() bool {
-		proj, err := client.Management.Project.ByID(projectID)
-		if err != nil || proj.ResourceQuota == nil {
-			return false
-		}
-		if proj.ResourceQuota.UsedLimit == nil {
-			return value == "0" || value == ""
-		}
-		switch field {
-		case "pods":
-			return proj.ResourceQuota.UsedLimit.Pods == value
-		case "services":
-			actual := proj.ResourceQuota.UsedLimit.Services
-			if value == "0" {
-				return actual == "0" || actual == ""
-			}
-			return actual == value
-		}
-		return false
-	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.%s=%s", field, value)
+// projectUsedLimit returns the project's usedLimit for the given field ("pods" or "services").
+// An unset usedLimit is reported as "0".
+func (p *RBACTestSuite) projectUsedLimit(client *rancher.Client, projectID, field string) (string, error) {
+	proj, err := client.Management.Project.ByID(projectID)
+	if err != nil {
+		return "", err
+	}
+	if proj.ResourceQuota == nil {
+		return "", fmt.Errorf("project %s has no resourceQuota", projectID)
+	}
+	if proj.ResourceQuota.UsedLimit == nil {
+		return "0", nil
+	}
+
+	var used string
+	switch field {
+	case "pods":
+		used = proj.ResourceQuota.UsedLimit.Pods
+	case "services":
+		used = proj.ResourceQuota.UsedLimit.Services
+	default:
+		return "", fmt.Errorf("unsupported usedLimit field %q", field)
+	}
+	if used == "" {
+		return "0", nil
+	}
+	return used, nil
 }
 
 // TestProjectResourceQuotaFields tests that creating a project with a resource quota
@@ -242,7 +243,12 @@ func (p *RBACTestSuite) TestNamespaceResourceQuotaCreated() {
 
 	ns := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "4"})
 
-	hard := p.waitForResourceQuota(client, ns.Name)
+	var hard map[string]string
+	p.Require().Eventually(func() bool {
+		h, err := p.resourceQuotaHard(client, ns.Name)
+		hard = h
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
 	p.Require().Equal("4", hard["pods"])
 }
 
@@ -267,7 +273,12 @@ func (p *RBACTestSuite) TestNamespaceDefaultQuotaApplied() {
 	// Create namespace without explicit quota — should get the project default.
 	ns := p.createNamespaceWithQuota(client, p.projectName(project), nil)
 
-	hard := p.waitForResourceQuota(client, ns.Name)
+	var hard map[string]string
+	p.Require().Eventually(func() bool {
+		h, err := p.resourceQuotaHard(client, ns.Name)
+		hard = h
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
 	p.Require().Equal("4", hard["pods"])
 }
 
@@ -298,7 +309,12 @@ func (p *RBACTestSuite) TestProjectQuotaUpdateAppliedToNamespace() {
 	p.Require().NoError(err)
 
 	// The controller should apply the default quota to the existing namespace.
-	hard := p.waitForResourceQuota(client, ns.Name)
+	var hard map[string]string
+	p.Require().Eventually(func() bool {
+		h, err := p.resourceQuotaHard(client, ns.Name)
+		hard = h
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
 	p.Require().Equal("4", hard["pods"])
 }
 
@@ -323,11 +339,19 @@ func (p *RBACTestSuite) TestNamespaceQuotaExceedsProjectLimit() {
 	// Create namespace requesting more pods than the project allows.
 	ns := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "200"})
 
-	// The controller should still create a ResourceQuota, but with zeroed overused resources.
-	hard := p.waitForResourceQuota(client, ns.Name)
-	p.Require().Contains(hard, "pods")
-	podsVal := hard["pods"]
-	p.Require().NotEqual("200", podsVal, "quota should not be set to the overused value")
+	// The controller should still create a ResourceQuota, but with the overused resource zeroed.
+	var hard map[string]string
+	p.Require().Eventually(func() bool {
+		h, err := p.resourceQuotaHard(client, ns.Name)
+		hard = h
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
+	p.Require().Equal("0", hard["pods"], "overused pods quota should be zeroed")
+
+	// A namespace whose quota failed validation doesn't count towards the project's usage.
+	used, err := p.projectUsedLimit(client, project.ID, "pods")
+	p.Require().NoError(err)
+	p.Require().Equal("0", used, "project usedLimit should not include the overused namespace")
 }
 
 // TestProjectUsedQuotaUpdated tests that the project's usedLimit is updated by the
@@ -349,9 +373,15 @@ func (p *RBACTestSuite) TestProjectUsedQuotaUpdated() {
 
 	// Create namespace — default quota of 4 pods should apply.
 	ns := p.createNamespaceWithQuota(client, p.projectName(project), nil)
-	p.waitForResourceQuota(client, ns.Name)
+	p.Require().Eventually(func() bool {
+		hard, err := p.resourceQuotaHard(client, ns.Name)
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns.Name)
 
-	p.waitForProjectUsedLimit(client, project.ID, "pods", "4")
+	p.Require().Eventually(func() bool {
+		used, err := p.projectUsedLimit(client, project.ID, "pods")
+		return err == nil && used == "4"
+	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
 }
 
 // TestProjectUsedQuotaExactMatch tests that when all of a project's quota is consumed
@@ -373,12 +403,21 @@ func (p *RBACTestSuite) TestProjectUsedQuotaExactMatch() {
 
 	// Create two namespaces: 2 + 8 = 10 pods (full quota).
 	ns1 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.waitForResourceQuota(client, ns1.Name)
+	p.Require().Eventually(func() bool {
+		hard, err := p.resourceQuotaHard(client, ns1.Name)
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns1.Name)
 
 	ns2 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "8"})
-	p.waitForResourceQuota(client, ns2.Name)
+	p.Require().Eventually(func() bool {
+		hard, err := p.resourceQuotaHard(client, ns2.Name)
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns2.Name)
 
-	p.waitForProjectUsedLimit(client, project.ID, "pods", "10")
+	p.Require().Eventually(func() bool {
+		used, err := p.projectUsedLimit(client, project.ID, "pods")
+		return err == nil && used == "10"
+	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=10")
 
 	// Try reducing the project quota below the used amount — should fail (422).
 	var apiErr *clientbase.APIError
@@ -413,12 +452,24 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 
 	// Create two namespaces using the default quota of 2 pods each.
 	ns1 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.waitForResourceQuota(client, ns1.Name)
-	p.waitForProjectUsedLimit(client, project.ID, "pods", "2")
+	p.Require().Eventually(func() bool {
+		hard, err := p.resourceQuotaHard(client, ns1.Name)
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns1.Name)
+	p.Require().Eventually(func() bool {
+		used, err := p.projectUsedLimit(client, project.ID, "pods")
+		return err == nil && used == "2"
+	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=2")
 
 	ns2 := p.createNamespaceWithQuota(client, p.projectName(project), map[string]string{"pods": "2"})
-	p.waitForResourceQuota(client, ns2.Name)
-	p.waitForProjectUsedLimit(client, project.ID, "pods", "4")
+	p.Require().Eventually(func() bool {
+		hard, err := p.resourceQuotaHard(client, ns2.Name)
+		return err == nil && len(hard) > 0
+	}, 2*time.Minute, 2*time.Second, "waiting for ResourceQuota in namespace %s", ns2.Name)
+	p.Require().Eventually(func() bool {
+		used, err := p.projectUsedLimit(client, project.ID, "pods")
+		return err == nil && used == "4"
+	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
 
 	// Trying to add services field with a default that exceeds project limit should fail.
 	var apiErr *clientbase.APIError
@@ -445,7 +496,10 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 	p.Require().NoError(err)
 
 	// Controller should propagate services default to existing namespaces.
-	p.waitForProjectUsedLimit(client, project.ID, "services", "4")
+	p.Require().Eventually(func() bool {
+		used, err := p.projectUsedLimit(client, project.ID, "services")
+		return err == nil && used == "4"
+	}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.services=4")
 
 	// Remove the services field — verify the update succeeds.
 	_, err = client.Management.Project.Update(project, map[string]any{
@@ -467,7 +521,10 @@ func (p *RBACTestSuite) TestProjectQuotaAddRemoveFields() {
 	// Tracking issue: https://github.com/rancher/rancher/issues/55060
 	//
 	// After removing services, usedLimit.services should drop to 0.
-	// p.waitForProjectUsedLimit(client, project.ID, "services", "0")
+	// p.Require().Eventually(func() bool {
+	// 	used, err := p.projectUsedLimit(client, project.ID, "services")
+	// 	return err == nil && used == "0"
+	// }, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.services=0")
 }
 
 // TestProjectQuotaCannotExceedWithExistingNamespaces tests that setting a project quota

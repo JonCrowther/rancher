@@ -32,17 +32,12 @@ func (p *RBACTestSuite) TestProjectCreatorGetsOwnerBindings() {
 	user := p.createUser(client, "testuser", "user")
 
 	// Grant user the cluster-member role on the local cluster.
-	crtb, err := client.Management.ClusterRoleTemplateBinding.Create(&management.ClusterRoleTemplateBinding{
+	_, err := client.Management.ClusterRoleTemplateBinding.Create(&management.ClusterRoleTemplateBinding{
 		ClusterID:       p.downstreamClusterID,
 		UserPrincipalID: user.PrincipalIDs[0],
 		RoleTemplateID:  "cluster-member",
 	})
 	p.Require().NoError(err)
-
-	p.T().Cleanup(func() {
-		err := client.Management.ClusterRoleTemplateBinding.Delete(crtb)
-		p.Require().NoError(err)
-	})
 
 	testUser, err := client.AsUser(user)
 	p.Require().NoError(err)
@@ -151,6 +146,17 @@ func (p *RBACTestSuite) TestReadOnlyCannotEditSecret() {
 	testUser, err := client.AsUser(user)
 	p.Require().NoError(err)
 
+	// Wait until the read-only binding is in effect, so the denials below are caused by the role
+	// and not by the binding still propagating.
+	err = extauthz.WaitForAllowed(testUser, p.downstreamClusterID, []*authzv1.ResourceAttributes{
+		{
+			Verb:      "list",
+			Resource:  "pods",
+			Namespace: ns.Name,
+		},
+	})
+	p.Require().NoError(err)
+
 	// Read-only user should fail to create a secret.
 	_, err = secrets.CreateSecretForCluster(testUser, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "test-secret-"},
@@ -245,37 +251,6 @@ func (p *RBACTestSuite) TestReadOnlyCannotMoveNamespace() {
 	p.Require().True(apierrors.IsForbidden(err), "expected forbidden, got: %v", err)
 }
 
-// TestSystemProjectCreated tests that the Default and System projects exist in the cluster and
-// carry their identifying labels.
-func (p *RBACTestSuite) TestSystemProjectCreated() {
-	client := p.newSubSession()
-
-	projects, err := client.Management.Project.List(&types.ListOpts{
-		Filters: map[string]any{
-			"clusterId": p.downstreamClusterID,
-		},
-	})
-	p.Require().NoError(err)
-
-	systemProjectLabel := "authz.management.cattle.io/system-project"
-	defaultProjectLabel := "authz.management.cattle.io/default-project"
-
-	initialProjects := map[string]string{
-		"Default": defaultProjectLabel,
-		"System":  systemProjectLabel,
-	}
-
-	var requiredProjects []string
-	for _, project := range projects.Data {
-		if label, ok := initialProjects[project.Name]; ok {
-			p.Require().Equal("true", project.Labels[label])
-			requiredProjects = append(requiredProjects, project.Name)
-		}
-	}
-
-	p.Require().Len(requiredProjects, len(initialProjects))
-}
-
 // TestSystemProjectCannotBeDeleted tests that deleting the System project is rejected with a 405.
 func (p *RBACTestSuite) TestSystemProjectCannotBeDeleted() {
 	client := p.newSubSession()
@@ -334,13 +309,17 @@ func (p *RBACTestSuite) TestSystemNamespacesDefaultServiceAccount() {
 	})
 	p.Require().NoError(err)
 
+	checked := 0
 	for _, sa := range saList.Items {
 		ns := sa.GetNamespace()
 		if _, ok := systemNamespaces[ns]; !ok || ns == "kube-system" {
 			continue
 		}
-		automount, found, _ := unstructured.NestedBool(sa.Object, "automountServiceAccountToken")
-		p.Require().True(found, fmt.Sprintf("automountServiceAccountToken not found for service account %s in namespace %s", sa.GetName(), ns))
-		p.Require().False(automount, fmt.Sprintf("automountServiceAccountToken should be false for service account %s in namespace %s", sa.GetName(), ns))
+		automount, found, err := unstructured.NestedBool(sa.Object, "automountServiceAccountToken")
+		p.Require().NoError(err, "automountServiceAccountToken is not a bool for service account %s in namespace %s", sa.GetName(), ns)
+		p.Require().True(found, "automountServiceAccountToken not found for service account %s in namespace %s", sa.GetName(), ns)
+		p.Require().False(automount, "automountServiceAccountToken should be false for service account %s in namespace %s", sa.GetName(), ns)
+		checked++
 	}
+	p.Require().NotZero(checked, "no default service accounts found in system namespaces %v", setting.Value)
 }

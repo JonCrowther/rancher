@@ -86,11 +86,12 @@ func (p *RBACTestSuite) TestGRBTargetsUserOrGroup() {
 
 	user := p.createUser(client, "grb-user", "user")
 
+	// Bind a low-privilege role, so a regression that accepts these bindings doesn't grant admin.
 	// Cannot specify both userId and groupPrincipalId (422).
 	_, err := client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
 		UserID:           user.ID,
 		GroupPrincipalID: "asd",
-		GlobalRoleID:     "admin",
+		GlobalRoleID:     "kontainerdrivers-manage",
 	})
 	var apiErr *clientbase.APIError
 	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
@@ -98,7 +99,7 @@ func (p *RBACTestSuite) TestGRBTargetsUserOrGroup() {
 
 	// Cannot omit both userId and groupPrincipalId (422).
 	_, err = client.Management.GlobalRoleBinding.Create(&management.GlobalRoleBinding{
-		GlobalRoleID: "admin",
+		GlobalRoleID: "kontainerdrivers-manage",
 	})
 	p.Require().True(errors.As(err, &apiErr), "expected APIError, got: %v", err)
 	p.Require().Equal(http.StatusUnprocessableEntity, apiErr.StatusCode)

@@ -10,21 +10,22 @@ import (
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/pkg/api/scheme"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
+	"github.com/stretchr/testify/assert"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// ensureClusterRolesExist ensures the given ClusterRoles exist in the downstream cluster,
-// creating them if necessary, and registers test cleanup to delete any created roles.
+// ensureClusterRolesExist ensures the given ClusterRoles exist in the downstream cluster, creating
+// them if necessary. Roles are created through the client's session, which deletes them when the
+// session is cleaned up.
 func (p *RBACTestSuite) ensureClusterRolesExist(client *rancher.Client, names []string) {
 	dynamicClient, err := client.GetDownStreamClusterClient(p.downstreamClusterID)
 	p.Require().NoError(err)
 
 	crResource := dynamicClient.Resource(extrbac.ClusterRoleGroupVersionResource)
 
-	var created []string
 	for _, name := range names {
 		_, err := crResource.Get(context.TODO(), name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -36,17 +37,10 @@ func (p *RBACTestSuite) ensureClusterRolesExist(client *rancher.Client, names []
 			p.Require().NoError(convErr)
 			_, err = crResource.Create(context.TODO(), &u, metav1.CreateOptions{})
 			p.Require().NoError(err)
-			created = append(created, name)
 		} else {
 			p.Require().NoError(err)
 		}
 	}
-
-	p.T().Cleanup(func() {
-		for _, name := range created {
-			_ = crResource.Delete(context.TODO(), name, metav1.DeleteOptions{})
-		}
-	})
 }
 
 // setClusterCreatorDefaults sets the given roles as cluster creator defaults. When a cluster is created these roles will be bound to the creator.
@@ -85,22 +79,22 @@ func (p *RBACTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleID
 		p.Require().NoError(err)
 	}
 
-	p.T().Cleanup(func() {
+	// The suite's T is swapped back to the parent before cleanups run, so report through the
+	// captured test T.
+	t := p.T()
+	t.Cleanup(func() {
 		// Reset: clear all, then restore originals.
 		allRTs, err := client.Management.RoleTemplate.List(nil)
-		if err != nil {
+		if !assert.NoError(t, err, "failed to list role templates to restore clusterCreatorDefault") {
 			return
 		}
 		for i := range allRTs.Data {
 			rt := &allRTs.Data[i]
-			if rt.ClusterCreatorDefault && !originals[rt.ID] {
-				_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{
-					"clusterCreatorDefault": false,
+			if rt.ClusterCreatorDefault != originals[rt.ID] {
+				_, err := client.Management.RoleTemplate.Update(rt, map[string]any{
+					"clusterCreatorDefault": originals[rt.ID],
 				})
-			} else if !rt.ClusterCreatorDefault && originals[rt.ID] {
-				_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{
-					"clusterCreatorDefault": true,
-				})
+				assert.NoError(t, err, "failed to restore clusterCreatorDefault on role template %s", rt.ID)
 			}
 		}
 	})
@@ -139,21 +133,19 @@ func (p *RBACTestSuite) setProjectCreatorDefaults(client *rancher.Client, roleID
 		p.Require().NoError(err)
 	}
 
-	p.T().Cleanup(func() {
+	t := p.T()
+	t.Cleanup(func() {
 		allRTs, err := client.Management.RoleTemplate.List(nil)
-		if err != nil {
+		if !assert.NoError(t, err, "failed to list role templates to restore projectCreatorDefault") {
 			return
 		}
 		for i := range allRTs.Data {
 			rt := &allRTs.Data[i]
-			if rt.ProjectCreatorDefault && !originals[rt.ID] {
-				_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{
-					"projectCreatorDefault": false,
+			if rt.ProjectCreatorDefault != originals[rt.ID] {
+				_, err := client.Management.RoleTemplate.Update(rt, map[string]any{
+					"projectCreatorDefault": originals[rt.ID],
 				})
-			} else if !rt.ProjectCreatorDefault && originals[rt.ID] {
-				_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{
-					"projectCreatorDefault": true,
-				})
+				assert.NoError(t, err, "failed to restore projectCreatorDefault on role template %s", rt.ID)
 			}
 		}
 	})
@@ -192,21 +184,19 @@ func (p *RBACTestSuite) setGlobalRoleDefaults(client *rancher.Client, roleIDs []
 		p.Require().NoError(err)
 	}
 
-	p.T().Cleanup(func() {
+	t := p.T()
+	t.Cleanup(func() {
 		allGRs, err := client.Management.GlobalRole.List(nil)
-		if err != nil {
+		if !assert.NoError(t, err, "failed to list global roles to restore newUserDefault") {
 			return
 		}
 		for i := range allGRs.Data {
 			gr := &allGRs.Data[i]
-			if gr.NewUserDefault && !originals[gr.ID] {
-				_, _ = client.Management.GlobalRole.Update(gr, map[string]any{
-					"newUserDefault": false,
+			if gr.NewUserDefault != originals[gr.ID] {
+				_, err := client.Management.GlobalRole.Update(gr, map[string]any{
+					"newUserDefault": originals[gr.ID],
 				})
-			} else if !gr.NewUserDefault && originals[gr.ID] {
-				_, _ = client.Management.GlobalRole.Update(gr, map[string]any{
-					"newUserDefault": true,
-				})
+				assert.NoError(t, err, "failed to restore newUserDefault on global role %s", gr.ID)
 			}
 		}
 	})
@@ -282,12 +272,20 @@ func (p *RBACTestSuite) TestClusterCreateRoleLocked() {
 
 	// Reset the locked state of the role after the test.
 	previousLocked := rt.Locked
-	p.T().Cleanup(func() {
-		_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{"locked": previousLocked})
+	t := p.T()
+	t.Cleanup(func() {
+		_, err := client.Management.RoleTemplate.Update(rt, map[string]any{"locked": previousLocked})
+		assert.NoError(t, err, "failed to restore locked on role template %s", rt.ID)
 	})
 
 	_, err = client.Management.RoleTemplate.Update(rt, map[string]any{"locked": true})
 	p.Require().NoError(err)
+
+	// Wait for the lock to take effect.
+	p.Require().Eventually(func() bool {
+		updated, err := client.Management.RoleTemplate.ByID(lockedRole)
+		return err == nil && updated.Locked
+	}, 2*time.Minute, 2*time.Second, "waiting for role to be locked")
 
 	cluster, err := client.Management.Cluster.Create(&management.Cluster{
 		Name: namegen.AppendRandomString("test-cluster-"),
@@ -330,7 +328,7 @@ func (p *RBACTestSuite) TestProjectCreateDefaultRole() {
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-project-"),
-		ClusterID: "local",
+		ClusterID: p.downstreamClusterID,
 	})
 	p.Require().NoError(err)
 
@@ -388,8 +386,10 @@ func (p *RBACTestSuite) TestProjectCreateRoleLocked() {
 
 	// Reset the locked state of the role after the test.
 	previousLocked := rt.Locked
-	p.T().Cleanup(func() {
-		_, _ = client.Management.RoleTemplate.Update(rt, map[string]any{"locked": previousLocked})
+	t := p.T()
+	t.Cleanup(func() {
+		_, err := client.Management.RoleTemplate.Update(rt, map[string]any{"locked": previousLocked})
+		assert.NoError(t, err, "failed to restore locked on role template %s", rt.ID)
 	})
 
 	_, err = client.Management.RoleTemplate.Update(rt, map[string]any{"locked": true})
@@ -403,7 +403,7 @@ func (p *RBACTestSuite) TestProjectCreateRoleLocked() {
 
 	project, err := client.Management.Project.Create(&management.Project{
 		Name:      namegen.AppendRandomString("test-project-"),
-		ClusterID: "local",
+		ClusterID: p.downstreamClusterID,
 	})
 	p.Require().NoError(err)
 
@@ -441,11 +441,12 @@ func (p *RBACTestSuite) TestUserCreateDefaultRole() {
 	testRoles := []string{"user-base", "settings-manage"}
 	p.setGlobalRoleDefaults(client, testRoles)
 
-	principal := "local://fakeuser"
+	// Randomized so a user leaked by an earlier run isn't reused.
+	principal := "local://" + namegen.AppendRandomString("fakeuser")
 
 	// Creating a CRTB with a fake principal triggers user creation via usermanager.EnsureUser.
 	crtb, err := client.Management.ClusterRoleTemplateBinding.Create(&management.ClusterRoleTemplateBinding{
-		ClusterID:       "local",
+		ClusterID:       p.downstreamClusterID,
 		RoleTemplateID:  "cluster-owner",
 		UserPrincipalID: principal,
 	})
@@ -461,10 +462,12 @@ func (p *RBACTestSuite) TestUserCreateDefaultRole() {
 		return crtb.UserID != ""
 	}, 2*time.Minute, 2*time.Second, "waiting for userId on CRTB")
 
+	// The user was created by a controller, not through the session, so delete it by hand.
 	user, err := client.Management.User.ByID(crtb.UserID)
 	p.Require().NoError(err)
-	p.T().Cleanup(func() {
-		_ = client.Management.User.Delete(user)
+	t := p.T()
+	t.Cleanup(func() {
+		assert.NoError(t, client.Management.User.Delete(user), "failed to delete user %s", user.ID)
 	})
 
 	// Wait for InitialRolesPopulated condition on the user.
@@ -498,7 +501,7 @@ func (p *RBACTestSuite) TestDefaultSystemProjectRole() {
 	client := p.newSubSession()
 
 	projects, err := client.Management.Project.List(&types.ListOpts{
-		Filters: map[string]any{"clusterId": "local"},
+		Filters: map[string]any{"clusterId": p.downstreamClusterID},
 	})
 	p.Require().NoError(err)
 
@@ -523,6 +526,8 @@ func (p *RBACTestSuite) TestDefaultSystemProjectRole() {
 
 	p.Require().Len(foundProjects, len(requiredProjects))
 
+	// TODO: this passes vacuously if a project has no PRTBs at all. Decide whether each project
+	// must have at least one project-owner binding and assert that.
 	testRoles := []string{"project-owner"}
 	for _, project := range foundProjects {
 		prtbs, err := client.Management.ProjectRoleTemplateBinding.List(&types.ListOpts{

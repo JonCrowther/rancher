@@ -5,23 +5,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/pkg/clientbase"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
+	"github.com/stretchr/testify/assert"
 )
-
-// assertKontainerDriverCount polls until the client's visible kontainer driver count matches expected,
-// since GlobalRoleBinding permissions are reconciled asynchronously by RBAC controllers.
-func (p *RBACTestSuite) assertKontainerDriverCount(c *rancher.Client, expected int) {
-	var kds *management.KontainerDriverCollection
-	p.Require().Eventually(func() bool {
-		var err error
-		kds, err = c.Management.KontainerDriver.List(nil)
-		return err == nil && len(kds.Data) == expected
-	}, 30*time.Second, time.Second, "timed out waiting for kontainer driver visibility to reach %d item(s)", expected)
-	p.Require().Len(kds.Data, expected)
-}
 
 // TestUserVsUserBaseGlobalRoleVisibility tests that users with the "user" and "user-base" global
 // roles can only see themselves, and that only "user" can see role templates.
@@ -78,24 +66,29 @@ func (p *RBACTestSuite) TestUserVsUserBaseGlobalRoleVisibility() {
 func (p *RBACTestSuite) TestKontainerDriverVisibilityByGlobalRole() {
 	client := p.newSubSession()
 
-	createUserWithRole := func(role string) *rancher.Client {
-		u := p.createUser(client, "kd-user", role)
-		c, err := client.AsUser(u)
-		p.Require().NoError(err)
-		return c
+	// "user", "clusters-create" and "kontainerdrivers-manage" can see kontainer drivers;
+	// "settings-manage" cannot. A count of 3 assumes the kontainer drivers of a default install.
+	visibility := []struct {
+		role     string
+		expected int
+	}{
+		{role: "user", expected: 3},
+		{role: "clusters-create", expected: 3},
+		{role: "kontainerdrivers-manage", expected: 3},
+		{role: "settings-manage", expected: 0},
 	}
 
-	// Standard "user" role can see kontainer drivers.
-	p.assertKontainerDriverCount(createUserWithRole("user"), 3)
+	for _, v := range visibility {
+		u := p.createUser(client, "kd-user", v.role)
+		userClient, err := client.AsUser(u)
+		p.Require().NoError(err)
 
-	// "clusters-create" role can see kontainer drivers.
-	p.assertKontainerDriverCount(createUserWithRole("clusters-create"), 3)
-
-	// "kontainerdrivers-manage" role can see kontainer drivers.
-	p.assertKontainerDriverCount(createUserWithRole("kontainerdrivers-manage"), 3)
-
-	// "settings-manage" role cannot see kontainer drivers.
-	p.assertKontainerDriverCount(createUserWithRole("settings-manage"), 0)
+		// GlobalRoleBinding permissions are reconciled asynchronously, so poll for the count.
+		p.Require().Eventually(func() bool {
+			kds, err := userClient.Management.KontainerDriver.List(nil)
+			return err == nil && len(kds.Data) == v.expected
+		}, 30*time.Second, time.Second, "timed out waiting for %q to see %d kontainer driver(s)", v.role, v.expected)
+	}
 }
 
 // TestOnlyAdminCanCRUDGlobalRoles tests that only admins can create, get, update,
@@ -165,7 +158,8 @@ func (p *RBACTestSuite) TestOnlyAdminCanCRUDGlobalRoles() {
 func (p *RBACTestSuite) TestBuiltinGlobalRoleOnlyNewUserDefaultEditable() {
 	client := p.newSubSession()
 
-	gr, err := client.Management.GlobalRole.ByID("admin")
+	// A low-privilege builtin role, so a failed revert doesn't hand every new user admin.
+	gr, err := client.Management.GlobalRole.ByID("kontainerdrivers-manage")
 	p.Require().NoError(err)
 	p.Require().True(gr.Builtin)
 	_, hasRemove := gr.Links["remove"]
@@ -182,11 +176,14 @@ func (p *RBACTestSuite) TestBuiltinGlobalRoleOnlyNewUserDefaultEditable() {
 	})
 	p.Require().NoError(err)
 
-	// Revert newUserDefault after test.
-	p.T().Cleanup(func() {
-		_, _ = client.Management.GlobalRole.Update(updated, map[string]any{
+	// Revert newUserDefault after test. The suite's T is swapped back to the parent before
+	// cleanups run, so report through the captured test T.
+	t := p.T()
+	t.Cleanup(func() {
+		_, err := client.Management.GlobalRole.Update(updated, map[string]any{
 			"newUserDefault": false,
 		})
+		assert.NoError(t, err, "failed to revert newUserDefault on global role %s", updated.ID)
 	})
 
 	// Name should remain unchanged.
@@ -204,7 +201,8 @@ func (p *RBACTestSuite) TestBuiltinGlobalRoleOnlyNewUserDefaultEditable() {
 func (p *RBACTestSuite) TestAdminCannotDeleteBuiltinGlobalRole() {
 	client := p.newSubSession()
 
-	gr, err := client.Management.GlobalRole.ByID("admin")
+	// A low-privilege builtin role, so a regression that allows the delete doesn't remove admin.
+	gr, err := client.Management.GlobalRole.ByID("kontainerdrivers-manage")
 	p.Require().NoError(err)
 	p.Require().True(gr.Builtin)
 	_, hasRemove := gr.Links["remove"]
