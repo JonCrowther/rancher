@@ -194,6 +194,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
 | `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
 | `tokens/` | `TestTokensTestSuite` | Current token, websocket origin check, API token max TTL, kubeconfig login token TTL and expiry | No |
+| `workloads/` | `TestWorkloadsTestSuite` | Norman project API: workloads (ports, registry credentials, probes, StatefulSet subPath validation, redeploy, rollback permissions), dnsRecords, ingresses, project and namespaced secrets, HPAs | No (uses `local`) |
 
 ---
 

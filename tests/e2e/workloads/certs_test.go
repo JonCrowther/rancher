@@ -1,4 +1,4 @@
-package integration
+package workloads
 
 const (
 	// certPEM and keyPEM are a self-signed certificate/key pair used for
