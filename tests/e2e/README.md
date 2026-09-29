@@ -191,7 +191,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
 | `users/` | `TestUserTestSuite` | User CRUD operations | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
-| `serviceaccount/` | `TestSATestSuite` | Service account token handling | No |
+| `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
 
 ---
 
