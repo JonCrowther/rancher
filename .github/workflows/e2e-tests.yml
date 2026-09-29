@@ -48,8 +48,6 @@ jobs:
               ./tests/e2e/users/...
               ./tests/e2e/authconfigs/...
             run: ''
-          # tokens runs LAST in its shard: it disables global auth settings and
-          # only restores them in cleanup, so keep it after the other packages.
           - shard: workloads-and-steve
             cpu: 8
             packages: >-

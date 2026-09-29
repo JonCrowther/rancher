@@ -193,6 +193,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `users/` | `TestUserTestSuite` | User CRUD operations | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
 | `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
+| `tokens/` | `TestTokensTestSuite` | Current token, websocket origin check, API token max TTL, kubeconfig login token TTL and expiry | No |
 
 ---
 
