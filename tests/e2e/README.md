@@ -190,7 +190,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, project access, impersonation, features | No (uses `local`) |
 | `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
 | `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
-| `users/` | `TestUserTestSuite` | User CRUD operations | No |
+| `users/` | `TestUsersTestSuite` | Users API protections: no self-delete or self-deactivate, password rules (not the username, minimum length) | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
 | `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
 | `tokens/` | `TestTokensTestSuite` | Current token, websocket origin check, API token max TTL, kubeconfig login token TTL and expiry | No |
