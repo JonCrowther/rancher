@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rancher/norman/types"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	stevev1 "github.com/rancher/shepherd/clients/rancher/v1"
@@ -26,15 +25,17 @@ import (
 func (s *TokensTestSuite) TestCurrentToken() {
 	client := s.newSubSession()
 
+	// Rancher never marks a derived token (e.g. an API key) as current, and the config's admin
+	// token may be one, so log in as a new user to get a session token.
+	user := s.createStandardUser(client)
+	userClient, err := client.AsUser(user)
+	s.Require().NoError(err)
+
 	// A bearer token is "<token name>:<secret>".
-	tokenName, _, found := strings.Cut(client.WranglerContext.RESTConfig.BearerToken, ":")
+	tokenName, _, found := strings.Cut(userClient.WranglerContext.RESTConfig.BearerToken, ":")
 	s.Require().True(found, "bearer token is not in <name>:<secret> form")
 
-	me, err := client.Management.User.List(&types.ListOpts{Filters: map[string]any{"me": true}})
-	s.Require().NoError(err)
-	s.Require().Len(me.Data, 1, "expected exactly one user for me=true")
-
-	tokens, err := client.Management.Token.ListAll(nil)
+	tokens, err := userClient.Management.Token.ListAll(nil)
 	s.Require().NoError(err)
 	var current []management.Token
 	for _, t := range tokens.Data {
@@ -44,7 +45,7 @@ func (s *TokensTestSuite) TestCurrentToken() {
 	}
 	s.Require().Len(current, 1, "expected exactly one current token")
 	s.Equal(tokenName, current[0].ID)
-	s.Equal(me.Data[0].ID, current[0].UserID)
+	s.Equal(user.ID, current[0].UserID)
 }
 
 // TestWebsocket verifies that requests with websocket-like upgrade headers and a
@@ -105,10 +106,8 @@ func (s *TokensTestSuite) TestAPITokenTTL() {
 func (s *TokensTestSuite) TestKubeconfigTokenTTL() {
 	client := s.newSubSession()
 
-	password := client.RancherConfig.AdminPassword
-	if password == "" {
-		s.T().Skip("rancher.adminPassword is not set in the test config; it's needed to log in as admin")
-	}
+	// Log in as a new user so the test doesn't depend on the config having an admin password.
+	user := s.createStandardUser(client)
 
 	// Set a short TTL (0.1 min = 6s): long enough to prove each token works before it expires.
 	// Read and write the setting through Steve, since Norman reports the default in place of an
@@ -177,12 +176,12 @@ func (s *TokensTestSuite) TestKubeconfigTokenTTL() {
 		{
 			name: "v3-public",
 			url:  fmt.Sprintf("https://%s/v3-public/localProviders/local?action=login", host),
-			body: map[string]any{"username": "admin", "password": password, "responseType": "kubeconfig"},
+			body: map[string]any{"username": user.Username, "password": user.Password, "responseType": "kubeconfig"},
 		},
 		{
 			name: "v1-public",
 			url:  fmt.Sprintf("https://%s/v1-public/login", host),
-			body: map[string]any{"type": "localProvider", "username": "admin", "password": password, "responseType": "kubeconfig"},
+			body: map[string]any{"type": "localProvider", "username": user.Username, "password": user.Password, "responseType": "kubeconfig"},
 		},
 	}
 	for _, e := range endpoints {

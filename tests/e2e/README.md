@@ -141,7 +141,6 @@ The test config file is read from the path in `CATTLE_TEST_CONFIG`. A minimal ex
 rancher:
   adminToken: "token-xxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
   host: "192.168.1.100"        # Rancher host (no https://, no trailing slash)
-  clusterName: "my-k3d-cluster" # name of the imported downstream cluster in Rancher
   insecure: true
   cleanup: true
 ```
@@ -152,7 +151,7 @@ All supported fields:
 |---|---|---|---|
 | `rancher.adminToken` | string | Bearer token for admin API access. Obtain from Rancher UI: User Icon → Account & API Keys → Create API Key (No Scope). | Yes |
 | `rancher.host` | string | Rancher server hostname or IP (no scheme, no trailing slash). | Yes |
-| `rancher.clusterName` | string | Name of the downstream cluster in Rancher. Required for downstream tests; use `local` to target the local cluster only. | Yes |
+| `rancher.clusterName` | string | Written by the setup binary with the name of the k3d cluster it imports. Not read by any test: suites target `local`, and the downstream tests find a ready downstream cluster themselves. | No |
 | `rancher.insecure` | bool | Skip TLS verification. Useful for self-signed certs. Default: `false`. | No |
 | `rancher.cleanup` | bool | Whether tests should delete the resources they create. Default: `true`. | No |
 | `rancher.adminPassword` | string | Admin password (alternative to `adminToken`). | No |
@@ -173,14 +172,16 @@ All supported fields:
 ## Test Suites
 
 Tests that only use the `local` cluster do **not** require a downstream cluster and can be run with just a basic
-`config.yaml`. Tests marked "downstream required" need an imported cluster referenced by `rancher.clusterName`.
+`config.yaml`. Tests marked "downstream required" need an imported downstream cluster that is `active` and `Ready`; they
+find it by listing the management clusters and using the first one that isn't `local`, so with more than one downstream
+cluster you can't choose which is used.
 
 Every test file has a companion `*_test_summary.md` describing what it covers. They're aggregated into
 [`test-summary.md`](./test-summary.md) — regenerate it with `go generate ./tests/e2e` after adding or editing a summary.
 
 | Directory | Test Function | What It Tests | Downstream Required? |
 |---|---|---|---|
-| `catalogv2/charts/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | Yes |
+| `catalogv2/charts/` | `TestChartsTestSuite` | Chart installation, tolerations, pull-through | No (uses `local`) |
 | `catalogv2/clusterrepo/` | `TestClusterRepoTestSuite` | ClusterRepo CRUD, OCI repos | No |
 | `catalogv2/uiplugin/` | `TestUIPluginTestSuite` | UI plugin extensions | No |
 | `catalogv2/managedcharts/` | `TestRancherManagedChartsTestSuite` | Rancher-managed Helm charts | No |

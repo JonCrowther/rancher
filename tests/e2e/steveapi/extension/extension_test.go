@@ -242,8 +242,10 @@ func (s *ExtensionAPITestSuite) TestExtensionAPIServerUpdateRequests() {
 	s.Require().NoError(json.Unmarshal(body, result))
 	s.Equal("kubeconfig updated", result.Spec.Description)
 
+	// Steve rejects an update without a resourceVersion before looking the object up, so send a
+	// placeholder to reach the not-found check.
 	updated.Name = "does-not-exist"
-	updated.ResourceVersion = ""
+	updated.ResourceVersion = "1"
 	data, err = json.Marshal(updated)
 	s.Require().NoError(err)
 

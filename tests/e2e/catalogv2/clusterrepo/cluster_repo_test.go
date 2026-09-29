@@ -120,7 +120,7 @@ func (c *ClusterRepoTestSuite) TestGitRepoRetries() {
 
 func StartHTTPRepository(c *ClusterRepoTestSuite) *httptest.Server {
 	// Directory where Helm chart and index.yaml are stored
-	repositoryDirectory := "../../testdata/"
+	repositoryDirectory := "../../../testdata/"
 	_, err := os.Stat(repositoryDirectory)
 	c.Require().NoError(err)
 
@@ -198,8 +198,8 @@ func StartErrorRegistry(status int) (*httptest.Server, error) {
 }
 
 func Start429Registry(t assert.TestingT, rateLimitedHeader bool) (*httptest.Server, error) {
-	testingChartPath := "../../testdata/testingchart-0.1.0.tgz"
-	testChartPath := "../../testdata/testchart-1.0.0.tgz"
+	testingChartPath := "../../../testdata/testingchart-0.1.0.tgz"
+	testChartPath := "../../../testdata/testchart-1.0.0.tgz"
 	helmChartTar, err := os.ReadFile(testingChartPath)
 	assert.NoError(t, err)
 
@@ -416,7 +416,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepo() {
 	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 	require.NoError(c.T(), err)
 
 	c.testClusterRepo(ClusterRepoParams{
@@ -439,7 +439,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepo2() {
 	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 	require.NoError(c.T(), err)
 
 	c.testClusterRepo(ClusterRepoParams{
@@ -520,7 +520,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepoMultipleChartRepos() {
 
 	//push testingchart helm chart
 	for i := 0; i < 300; i++ {
-		err = AddHelmChart(u, fmt.Sprintf("testingchart-%d", i), "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+		err = AddHelmChart(u, fmt.Sprintf("testingchart-%d", i), "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 		require.NoError(c.T(), err)
 	}
 
@@ -542,9 +542,9 @@ func (c *ClusterRepoTestSuite) TestOCIRepoWithOptions() {
 	u, err := url.Parse(ts.URL)
 	require.NoError(c.T(), err)
 
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 	require.NoError(c.T(), err)
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-1.0.0.tgz", "1.0.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-1.0.0.tgz", "1.0.0")
 	require.NoError(c.T(), err)
 
 	c.testClusterRepoOCIOptions(ClusterRepoParams{
@@ -679,7 +679,7 @@ func (c *ClusterRepoTestSuite) TestOCIRepoChartInstallation() {
 	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 	require.NoError(c.T(), err)
 
 	repoName := namegen.AppendRandomString("oci")
@@ -799,7 +799,7 @@ func (c *ClusterRepoTestSuite) TestOCIEnableRepo() {
 	repoName := namegen.AppendRandomString("oci")
 
 	// Add a single helm chart
-	err = AddHelmChart(u, "testingchart", "../../testdata/testingchart-0.1.0.tgz", "0.1.0")
+	err = AddHelmChart(u, "testingchart", "../../../testdata/testingchart-0.1.0.tgz", "0.1.0")
 	require.NoError(c.T(), err)
 
 	// Create a ClusterRepo
@@ -828,7 +828,7 @@ func (c *ClusterRepoTestSuite) TestOCIEnableRepo() {
 	}, time.Minute, PollInterval, "waiting for the controller to process disabling %s", repoName)
 
 	// Add a second helm chart
-	err = AddHelmChart(u, "testchart", "../../testdata/testchart-1.0.0.tgz", "1.0.0")
+	err = AddHelmChart(u, "testchart", "../../../testdata/testchart-1.0.0.tgz", "1.0.0")
 	require.NoError(c.T(), err)
 
 	// ForceRefresh the clusterrepo

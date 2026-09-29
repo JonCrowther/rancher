@@ -4,6 +4,10 @@ import (
 	"testing"
 
 	"github.com/rancher/shepherd/clients/rancher"
+	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
+	"github.com/rancher/shepherd/extensions/users"
+	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
+	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 	"github.com/rancher/shepherd/pkg/session"
 	"github.com/stretchr/testify/suite"
 )
@@ -37,6 +41,22 @@ func (s *TokensTestSuite) newSubSession() *rancher.Client {
 	s.Require().NoError(err)
 	s.T().Cleanup(subSession.Cleanup)
 	return client
+}
+
+// createStandardUser creates an enabled user with the "user" global role. The returned user's
+// Password is set, so it can log in.
+func (s *TokensTestSuite) createStandardUser(client *rancher.Client) *management.User {
+	enabled := true
+	pw := password.GenerateUserPassword("testpass-")
+	user, err := users.CreateUserWithRole(client, &management.User{
+		Username: namegen.AppendRandomString("user-"),
+		Password: pw,
+		Name:     "testuser",
+		Enabled:  &enabled,
+	}, "user")
+	s.Require().NoError(err)
+	user.Password = pw
+	return user
 }
 
 func TestTokensTestSuite(t *testing.T) {
