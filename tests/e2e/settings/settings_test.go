@@ -1,54 +1,26 @@
-package integration
+package settings
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"testing"
 
-	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/clientbase"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
 	"k8s.io/client-go/rest"
 )
-
-type SettingsTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
-}
-
-func (s *SettingsTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *SettingsTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *SettingsTestSuite) httpClient() *http.Client {
-	httpClient, err := rest.HTTPClientFor(s.client.WranglerContext.RESTConfig)
-	s.Require().NoError(err)
-	return httpClient
-}
 
 // TestCreateReadOnly verifies that creating the readOnly "cacerts" setting is
 // rejected with 405 Method Not Allowed.
 func (s *SettingsTestSuite) TestCreateReadOnly() {
-	_, err := s.client.Management.Setting.Create(&management.Setting{
+	client := s.newSubSession()
+
+	_, err := client.Management.Setting.Create(&management.Setting{
 		Name:  "cacerts",
 		Value: "a",
 	})
@@ -62,10 +34,15 @@ func (s *SettingsTestSuite) TestCreateReadOnly() {
 // TestUpdateReadOnly verifies that updating the readOnly "cacerts" setting is
 // rejected with 405 Method Not Allowed.
 func (s *SettingsTestSuite) TestUpdateReadOnly() {
-	setting, err := s.client.Management.Setting.ByID("cacerts")
+	client := s.newSubSession()
+
+	setting, err := client.Management.Setting.ByID("cacerts")
 	s.Require().NoError(err)
 
-	_, err = s.client.Management.Setting.Update(setting, &management.Setting{Value: "b"})
+	// Rancher rejects any update to a readOnly setting, whatever the value. Sending the current
+	// value means a regression that lets the update through can't change the CA certs of the
+	// shared Rancher.
+	_, err = client.Management.Setting.Update(setting, &management.Setting{Value: setting.Value})
 	s.Require().Error(err)
 	var apiErr *clientbase.APIError
 	s.Require().True(errors.As(err, &apiErr))
@@ -73,19 +50,26 @@ func (s *SettingsTestSuite) TestUpdateReadOnly() {
 	s.Contains(apiErr.Msg, "readOnly")
 }
 
-// TestGetReadOnly verifies that the readOnly "cacerts" setting can be retrieved.
+// TestGetReadOnly verifies that the readOnly "cacerts" setting can be retrieved,
+// and is returned without an "update" link even for an admin.
 func (s *SettingsTestSuite) TestGetReadOnly() {
-	_, err := s.client.Management.Setting.ByID("cacerts")
+	client := s.newSubSession()
+
+	setting, err := client.Management.Setting.ByID("cacerts")
 	s.Require().NoError(err)
+	s.Equal("cacerts", setting.ID)
+	s.NotContains(setting.Links, "update", "readOnly setting should not have an update link")
 }
 
 // TestDeleteReadOnly verifies that deleting the readOnly "cacerts" setting is
 // rejected with 405 Method Not Allowed.
 func (s *SettingsTestSuite) TestDeleteReadOnly() {
-	setting, err := s.client.Management.Setting.ByID("cacerts")
+	client := s.newSubSession()
+
+	setting, err := client.Management.Setting.ByID("cacerts")
 	s.Require().NoError(err)
 
-	err = s.client.Management.Setting.Delete(setting)
+	err = client.Management.Setting.Delete(setting)
 	s.Require().Error(err)
 	var apiErr *clientbase.APIError
 	s.Require().True(errors.As(err, &apiErr))
@@ -95,10 +79,7 @@ func (s *SettingsTestSuite) TestDeleteReadOnly() {
 
 // TestCreate verifies that a new setting can be created with the expected value.
 func (s *SettingsTestSuite) TestCreate() {
-	subSession := s.session.NewSession()
-	s.T().Cleanup(subSession.Cleanup)
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
 	setting, err := client.Management.Setting.Create(&management.Setting{
 		Name:  namegen.AppendRandomString("samplesetting-"),
@@ -111,13 +92,10 @@ func (s *SettingsTestSuite) TestCreate() {
 // TestCreateExisting verifies that creating a setting whose name is already
 // taken returns 409 Conflict with code AlreadyExists.
 func (s *SettingsTestSuite) TestCreateExisting() {
-	subSession := s.session.NewSession()
-	s.T().Cleanup(subSession.Cleanup)
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
 	name := namegen.AppendRandomString("samplesetting-")
-	_, err = client.Management.Setting.Create(&management.Setting{
+	_, err := client.Management.Setting.Create(&management.Setting{
 		Name:  name,
 		Value: "a",
 	})
@@ -136,10 +114,7 @@ func (s *SettingsTestSuite) TestCreateExisting() {
 
 // TestUpdate verifies that an existing setting can be updated to a new value.
 func (s *SettingsTestSuite) TestUpdate() {
-	subSession := s.session.NewSession()
-	s.T().Cleanup(subSession.Cleanup)
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
 	setting, err := client.Management.Setting.Create(&management.Setting{
 		Name:  namegen.AppendRandomString("samplesetting-"),
@@ -155,33 +130,41 @@ func (s *SettingsTestSuite) TestUpdate() {
 // TestUpdateNonExisting verifies that attempting to update a setting that does
 // not exist returns 404 Not Found.
 func (s *SettingsTestSuite) TestUpdateNonExisting() {
-	nonExistentID := namegen.AppendRandomString("nonexistent-")
-	host := s.client.WranglerContext.RESTConfig.Host
-	httpClient := s.httpClient()
+	client := s.newSubSession()
 
-	body, err := json.Marshal(map[string]any{"value": "a"})
+	// The Norman client can only update a resource it has fetched, so send the PUT directly.
+	httpClient, err := rest.HTTPClientFor(client.WranglerContext.RESTConfig)
 	s.Require().NoError(err)
+	putSetting := func(id string) int {
+		body, err := json.Marshal(map[string]any{"value": "b"})
+		s.Require().NoError(err)
+		req, err := http.NewRequest(http.MethodPut,
+			fmt.Sprintf("https://%s/v3/settings/%s", client.WranglerContext.RESTConfig.Host, id),
+			bytes.NewReader(body))
+		s.Require().NoError(err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := httpClient.Do(req)
+		s.Require().NoError(err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
 
-	req, err := http.NewRequest(http.MethodPut,
-		fmt.Sprintf("https://%s/v3/settings/%s", host, nonExistentID),
-		bytes.NewReader(body))
+	// The same request against an existing setting succeeds, so the 404 below comes from the
+	// missing setting and not from a bad URL or credentials.
+	existing, err := client.Management.Setting.Create(&management.Setting{
+		Name:  namegen.AppendRandomString("samplesetting-"),
+		Value: "a",
+	})
 	s.Require().NoError(err)
-	req.Header.Set("Content-Type", "application/json")
+	s.Require().Equal(http.StatusOK, putSetting(existing.ID))
 
-	resp, err := httpClient.Do(req)
-	s.Require().NoError(err)
-	io.ReadAll(resp.Body) //nolint:errcheck
-	resp.Body.Close()
-	s.Equal(http.StatusNotFound, resp.StatusCode)
+	s.Equal(http.StatusNotFound, putSetting(namegen.AppendRandomString("nonexistent-")))
 }
 
 // TestUpdateLink verifies that the admin user sees the "update" action link on
 // a setting, while a standard user does not.
 func (s *SettingsTestSuite) TestUpdateLink() {
-	subSession := s.session.NewSession()
-	s.T().Cleanup(subSession.Cleanup)
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
 	setting, err := client.Management.Setting.Create(&management.Setting{
 		Name:  namegen.AppendRandomString("samplesetting-"),
@@ -214,8 +197,4 @@ func (s *SettingsTestSuite) TestUpdateLink() {
 	s.Require().NoError(err)
 	_, hasUpdate = userSetting.Links["update"]
 	s.False(hasUpdate, "standard user should not see update link on setting")
-}
-
-func TestSettings(t *testing.T) {
-	suite.Run(t, new(SettingsTestSuite))
 }

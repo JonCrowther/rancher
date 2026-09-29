@@ -186,6 +186,7 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `catalogv2/managedcharts/` | `TestRancherManagedChartsTestSuite` | Rancher-managed Helm charts | No |
 | `clusters/` | `TestClustersTestSuite` | Cluster defaults and node counts, node/driver schemas, PV and PVC validation, K8s API proxy | Yes (proxy tests only) |
 | `projects/` | `TestProjectsTestSuite` | Namespace creation by project members/owners, project resource quota validation, propagation and usage, System project and system namespaces | No (uses `local`) |
+| `settings/` | `TestSettingsTestSuite` | Settings API: read-only `cacerts` protection, create/update, update-link visibility | No |
 | `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, project access, impersonation, features | No (uses `local`) |
 | `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
 | `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
