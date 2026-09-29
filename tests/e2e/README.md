@@ -114,8 +114,8 @@ go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/
 # Run a specific test within a suite
 go test -v -count=1 -run TestRBACTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
 
-# Run Steve API tests (local cluster only — no downstream cluster needed)
-go test -v -count=1 -run TestSteveLocal ./tests/e2e/steveapi/
+# Run the Steve API secrets tests (local cluster only — no downstream cluster needed)
+go test -v -count=1 -run TestSecretsTestSuite ./tests/e2e/steveapi/secrets/
 ```
 
 ### Common `go test` Flags
@@ -188,8 +188,8 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `projects/` | `TestProjectsTestSuite` | Namespace creation by project members/owners, project resource quota validation, propagation and usage, System project and system namespaces | No (uses `local`) |
 | `settings/` | `TestSettingsTestSuite` | Settings API: read-only `cacerts` protection, create/update, update-link visibility | No |
 | `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, project access, impersonation, features | No (uses `local`) |
-| `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
-| `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
+| `steveapi/secrets/` | `TestSecretsTestSuite` | Steve secrets API: listing (filters, sorting, paging, summaries, project/namespace scoping) per user access, CRUD, links | No (uses `local`) |
+| `steveapi/extension/` | `TestExtensionAPITestSuite` | Extension API server: discovery/OpenAPI auth, endpoint authorization, kubeconfig and selfuser create/update/delete through Steve | No (uses `local`) |
 | `users/` | `TestUsersTestSuite` | Users API protections: no self-delete or self-deactivate, password rules (not the username, minimum length) | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
 | `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
