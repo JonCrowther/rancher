@@ -7,13 +7,17 @@ Generated from the `*_test_summary.md` files next to each test file — edit tho
 ## Contents
 
 - [authconfigs/](#authconfigs)
-- [catalogv2/](#catalogv2)
+- [catalogv2/charts/](#catalogv2-charts)
+- [catalogv2/clusterrepo/](#catalogv2-clusterrepo)
+- [catalogv2/managedcharts/](#catalogv2-managedcharts)
+- [catalogv2/uiplugin/](#catalogv2-uiplugin)
 - [clusters/](#clusters)
 - [projects/](#projects)
 - [rbac/](#rbac)
 - [serviceaccount/](#serviceaccount)
 - [settings/](#settings)
-- [steveapi/](#steveapi)
+- [steveapi/extension/](#steveapi-extension)
+- [steveapi/secrets/](#steveapi-secrets)
 - [tokens/](#tokens)
 - [users/](#users)
 - [workloads/](#workloads)
@@ -22,7 +26,7 @@ Generated from the `*_test_summary.md` files next to each test file — edit tho
 
 ### `auth_configs_test.go` Summary
 
-Verifies that the expected set of authentication configuration types are available and properly secured via the API.
+Verifies the set of supported authentication config types, the actions each type exposes, their protection from deletion, and the secret lifecycle for a SAML-based provider.
 
 #### `TestAuthConfigsExistAndCannotBeDeleted`
 **Act:** Lists all auth configs from the API and attempts to delete each one.
@@ -46,478 +50,453 @@ Verifies that the expected set of authentication configuration types are availab
 - Checks a "pingconfig-spkey" secret is created in the cattle-global-data namespace.
 - Checks secrets for other unconfigured SAML providers ("adfsconfig-spkey", "oktaconfig-spkey", "keycloakconfig-spkey") are NOT created.
 
-## catalogv2/
+## catalogv2/charts/
 
-### `charts_test.go` Summary
+### `skip_schema_validation_test.go` Summary
 
-Verifies that charts can be installed, upgraded, and uninstalled with automatic, custom, or no CP-node tolerations on tainted control plane nodes, and that schema validation can be skipped during chart install/upgrade.
-
-#### `TestInstallChartWithAutomaticTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint (`testTaint`) to a control plane node.
-
-**Act:** Installs the `rancher-aks-operator-crd` chart with `AutomaticCPTolerations` enabled.
-
-**Assert:**
-- Checks the chart reaches `StatusDeployed`.
-- Checks the install operation's pod tolerations include the custom taint.
-
-#### `TestInstallChartWithCustomTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint (`testTaint`) to a control plane node.
-
-**Act:** Installs the chart with an explicit `OperationTolerations` entry matching the taint (no automatic CP tolerations).
-
-**Assert:**
-- Checks the chart reaches `StatusDeployed`.
-- Checks the install operation's pod tolerations include the custom taint.
-
-#### `TestUpgradeChartWithCustomTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint to a control plane node.
-- Installs `rancher-aks-operator-crd` version `104.0.1+up1.9.0` with a custom `OperationTolerations` entry matching the taint; confirms it reaches `StatusDeployed` with the taint tolerated.
-
-**Act:** Upgrades the chart to version `104.0.2+up1.9.0`, specifying the same custom toleration.
-
-**Assert:**
-- Checks the upgrade reaches `StatusDeployed`.
-- Checks the upgraded operation's pod tolerations still include the custom taint.
-
-#### `TestUpgradeChartWithAutomaticTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint to a control plane node.
-- Installs the chart at version `104.0.1+up1.9.0` with a custom toleration matching the taint; confirms it reaches `StatusDeployed` with the taint tolerated.
-
-**Act:** Upgrades the chart to version `104.0.2+up1.9.0` with `AutomaticCPTolerations` enabled instead of an explicit toleration.
-
-**Assert:**
-- Checks the upgrade reaches `StatusDeployed`.
-- Checks the upgraded operation's pod tolerations still include the custom taint.
-
-#### `TestUpgradeChartInstalledWithoutTolerationsUsingAutomaticTolerations`
-**Arrange:**
-- Installs the chart at version `104.0.1+up1.9.0` with no automatic CP tolerations and no custom tolerations; confirms it reaches `StatusDeployed` with only the default pod tolerations.
-- Adds a custom taint to a control plane node.
-
-**Act:** Upgrades the chart to version `104.0.2+up1.9.0` with `AutomaticCPTolerations` enabled.
-
-**Assert:**
-- Checks the upgrade reaches `StatusDeployed`.
-- Checks the upgraded operation's pod tolerations now include the custom taint.
-
-#### `TestUninstallChartWithAutomaticTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint to a control plane node.
-- Installs the chart with a custom toleration matching the taint; confirms it reaches `StatusDeployed` with the taint tolerated.
-
-**Act:** Uninstalls the chart with `AutomaticCPTolerations` enabled.
-
-**Assert:**
-- Checks the chart reaches `StatusUninstalled`.
-- Checks the uninstall operation's pod tolerations still include the custom taint.
-
-#### `TestUninstallChartWithCustomTolerationOnTaintedCPNode`
-**Arrange:**
-- Adds a custom taint to a control plane node.
-- Installs the chart with a custom toleration matching the taint; confirms it reaches `StatusDeployed` with the taint tolerated.
-
-**Act:** Uninstalls the chart, specifying the same custom toleration explicitly (no automatic CP tolerations).
-
-**Assert:**
-- Checks the chart reaches `StatusUninstalled`.
-- Checks the uninstall operation's pod tolerations still include the custom taint.
+Verifies that the `SkipSchemaValidation` option on a chart install or upgrade is passed through to the helm command Rancher runs.
 
 #### `TestInstallChartWithSkipSchemaValidation`
-**Arrange:**
-- None.
-
-**Act:** Installs the chart with `SkipSchemaValidation` enabled.
+**Act:** Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 from the suite's charts-small-fork ClusterRepo into `cattle-system` with `SkipSchemaValidation` enabled.
 
 **Assert:**
-- Checks the chart reaches `StatusDeployed`.
-- Checks the install operation's command includes `--skip-schema-validation=true`.
+- Checks the app reaches `deployed`.
+- Checks the newest operation for the release ran a helm command containing `--skip-schema-validation=true`.
+- Checks the app is removed or reaches `uninstalled` after an uninstall.
 
 #### `TestUpgradeChartWithSkipSchemaValidation`
 **Arrange:**
-- Installs the chart at version `104.0.2+up1.9.0` (without `SkipSchemaValidation`); confirms it reaches `StatusDeployed`.
+- Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 normally, without `SkipSchemaValidation`.
 
-**Act:** Upgrades the chart (same version) with `SkipSchemaValidation` enabled.
+**Act:** Upgrades the release to the same version with `SkipSchemaValidation` enabled.
 
 **Assert:**
-- Checks the upgrade reaches `StatusDeployed`.
-- Checks the upgrade operation's command includes `--skip-schema-validation=true`.
+- Checks the upgrade reaches `deployed` as a new app revision.
+- Checks the newest operation for the release (the upgrade) ran a helm command containing `--skip-schema-validation=true`.
+- Checks the app is removed or reaches `uninstalled` after an uninstall.
+
+### `tolerations_test.go` Summary
+
+Verifies that the helm operation pods Rancher runs to install, upgrade, and uninstall a chart receive tolerations for a tainted control-plane node, either from automatic CP tolerations or from custom operation tolerations.
+
+#### `TestInstallChartWithAutomaticTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint=testValue:PreferNoSchedule`.
+
+**Act:** Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 into `cattle-system` with automatic CP tolerations enabled.
+
+**Assert:**
+- Checks the app reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+#### `TestInstallChartWithCustomTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint`.
+
+**Act:** Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 with automatic CP tolerations disabled and a custom operation toleration for `testTaint`.
+
+**Assert:**
+- Checks the app reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+#### `TestUpgradeChartWithCustomTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint`.
+
+**Act 1:** Installs `rancher-aks-operator-crd` 104.0.1+up1.9.0 with automatic CP tolerations disabled and a custom operation toleration for `testTaint`.
+**Assert 1:**
+- Checks the install reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+**Act 2:** Upgrades the release to 104.0.2+up1.9.0 with the same custom `testTaint` toleration.
+**Assert 2:**
+- Checks the upgrade reaches `deployed` as a new app revision.
+- Checks the upgrade operation pod tolerates `testTaint`.
+
+#### `TestUpgradeChartWithAutomaticTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint`.
+
+**Act 1:** Installs `rancher-aks-operator-crd` 104.0.1+up1.9.0 with automatic CP tolerations disabled and a custom operation toleration for `testTaint`.
+**Assert 1:**
+- Checks the install reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+**Act 2:** Upgrades the release to 104.0.2+up1.9.0 with automatic CP tolerations enabled and no custom tolerations.
+**Assert 2:**
+- Checks the upgrade reaches `deployed` as a new app revision.
+- Checks the upgrade operation pod tolerates `testTaint`.
+
+#### `TestUpgradeChartInstalledWithoutTolerationsUsingAutomaticTolerations`
+**Act 1:** Installs `rancher-aks-operator-crd` 104.0.1+up1.9.0 on an untainted node with no automatic or custom tolerations.
+**Assert 1:**
+- Checks the install reaches `deployed`.
+- Checks the install operation pod has the 5 default operation tolerations (`cattle.io/os=linux`, `node-role.kubernetes.io/controlplane=true`, `node-role.kubernetes.io/control-plane`, `node-role.kubernetes.io/etcd`, `node.cloudprovider.kubernetes.io/uninitialized=true`).
+
+**Act 2:** Taints the control-plane node with `testTaint`, then upgrades the release to 104.0.2+up1.9.0 with automatic CP tolerations enabled.
+**Assert 2:**
+- Checks the upgrade reaches `deployed` as a new app revision.
+- Checks the upgrade operation pod tolerates `testTaint`.
+
+#### `TestUninstallChartWithAutomaticTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint`.
+
+**Act 1:** Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 with a custom `testTaint` toleration (automatic CP tolerations disabled).
+**Assert 1:**
+- Checks the install reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+**Act 2:** Uninstalls the chart with automatic CP tolerations enabled.
+**Assert 2:**
+- Checks the app is removed or reaches `uninstalled`.
+- Checks the uninstall operation pod tolerates `testTaint`.
+
+#### `TestUninstallChartWithCustomTolerationOnTaintedCPNode`
+**Arrange:**
+- Taints the control-plane node with `testTaint`.
+
+**Act 1:** Installs `rancher-aks-operator-crd` 104.0.2+up1.9.0 with a custom `testTaint` toleration.
+**Assert 1:**
+- Checks the install reaches `deployed`.
+- Checks the install operation pod tolerates `testTaint`.
+
+**Act 2:** Uninstalls the chart with the same custom `testTaint` toleration and automatic CP tolerations disabled.
+**Assert 2:**
+- Checks the app is removed or reaches `uninstalled`.
+- Checks the uninstall operation pod tolerates `testTaint`.
+
+## catalogv2/clusterrepo/
 
 ### `cluster_repo_test.go` Summary
 
-Verifies that ClusterRepo resources of HTTP, Git, and OCI type support the create/update/delete lifecycle, including retry/backoff behavior on download failures, 4xx and 429 error handling, OCI tag filtering, and enabling/disabling to control chart discovery.
+Verifies that HTTP, Git, and OCI ClusterRepos download their chart indexes, pick up spec changes, honor OCI tag filters and enable/disable, handle registry errors and rate limits with the right retries, and can be used to install charts.
 
 #### `TestHTTPRepo`
 **Arrange:**
-- Starts an HTTP test server serving Helm charts from local testdata.
+- Starts a local HTTP Helm repository serving the testdata charts.
 
-**Act 1:** Creates an HTTP ClusterRepo pointing at the test server's URL.
+**Act 1:** Creates an HTTP ClusterRepo pointing at the local server.
 **Assert 1:**
-- Checks the ClusterRepo downloads resources and its status URL matches the test server URL.
+- Checks the local server receives User-Agent `go/rancher/<server-version-type>/<server-version> (HTTP-based Helm Repository)`.
+- Checks the repo downloads and its status URL is the local server's URL.
 
-**Act 2:** Updates the ClusterRepo's URL to the public stable Rancher HTTP repo.
+**Act 2:** Updates the ClusterRepo's URL to `https://releases.rancher.com/server-charts/stable`.
 **Assert 2:**
-- Checks new resources are downloaded (DownloadTime changes) and the status URL matches the new URL.
-- Checks `ObservedGeneration` increases.
+- Checks the URL change triggers a new download, the status URL becomes the new URL, and the observed generation increases.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestGitRepo`
-**Arrange:**
-- None.
-
-**Act 1:** Creates a Git ClusterRepo pointing at `rancher/charts`.
+**Act 1:** Creates a Git ClusterRepo for `https://github.com/rancher/charts`.
 **Assert 1:**
-- Checks the ClusterRepo downloads resources and its status URL matches `rancher/charts`.
+- Checks the repo downloads and its status URL is `rancher/charts`.
 
-**Act 2:** Updates the ClusterRepo's Git URL to `rancher/rke2-charts`.
+**Act 2:** Updates the GitRepo URL to `https://github.com/rancher/rke2-charts`.
 **Assert 2:**
-- Checks new resources are downloaded and the status URL matches the new repo.
-- Checks `ObservedGeneration` increases.
+- Checks the URL change triggers a new download, the status URL becomes `rancher/rke2-charts`, and the observed generation increases.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestGitRepoRetries`
-**Arrange:**
-- None.
-
-**Act 1:** Creates a Git ClusterRepo pointing at `charts-small-fork` with an invalid branch name and a backoff configuration of 30s min wait, 60s max wait, and 2 max retries.
+**Act 1:** Creates a Git ClusterRepo for `https://github.com/rancher/charts-small-fork` on branch `invalid-branch`, with exponential backoff of 30s min wait, 60s max wait, and 2 max retries.
 **Assert 1:**
-- Checks the `RepoDownloaded` condition stays `False`, with `NumberOfRetries` incrementing on each attempt up to the configured max (2) before resetting to 0, confirming retries are exhausted rather than retried indefinitely.
+- Checks the `RepoDownloaded` condition stays False while the retry count climbs from 1 to 2, then resets to 0 once retries are exhausted.
 
-**Act 2:** Updates the ClusterRepo's Git branch to the valid `main` branch.
+**Act 2:** Updates the branch to `main`.
 **Assert 2:**
-- Checks the ClusterRepo downloads successfully (DownloadTime advances past the pre-fix value).
+- Checks the branch change triggers a download with a newer download time.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestOCIRepo`
 **Arrange:**
-- Starts a local OCI registry and pushes `testingchart` version `0.1.0` to it.
+- Starts a local OCI registry and pushes `testingchart` 0.1.0 to `rancher/testingchart`.
 
-**Act 1:** Creates an OCI ClusterRepo pointing at the chart's registry path (no tag).
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with plain HTTP.
 **Assert 1:**
-- Checks the ClusterRepo downloads resources and its status URL matches the registry path.
+- Checks every registry request has a User-Agent containing `go`, `rancher`, and `(OCI-based Helm Repository)`.
+- Checks the repo downloads and its status URL is the first URL.
 
-**Act 2:** Updates the ClusterRepo's URL to the same path with an explicit `:0.1.0` tag.
+**Act 2:** Updates the URL to `oci://<registry>/rancher/testingchart:0.1.0`.
 **Assert 2:**
-- Checks new resources are downloaded and the status URL matches the tagged URL.
-- Checks `ObservedGeneration` increases.
+- Checks the URL change triggers a new download, the status URL becomes the tagged URL, and the observed generation increases.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestOCIRepo2`
 **Arrange:**
-- Starts a local OCI registry and pushes `testingchart` version `0.1.0` to it.
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed.
 
-**Act 1:** Creates an OCI ClusterRepo pointing at the registry's `rancher` repository path.
+**Act 1:** Creates an OCI ClusterRepo for the namespace URL `oci://<registry>/rancher`.
 **Assert 1:**
-- Checks the ClusterRepo downloads resources and its status URL matches the repository path.
+- Checks the repo downloads and its status URL is the namespace URL.
 
-**Act 2:** Updates the ClusterRepo's URL to the broader registry root.
+**Act 2:** Updates the URL to the registry root `oci://<registry>/`.
 **Assert 2:**
-- Checks new resources are downloaded and the status URL matches the root URL.
+- Checks the URL change triggers a new download, the status URL becomes the root URL, and the observed generation increases.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestOCIRepo3`
-**Arrange:**
-- None.
-
-**Act:** Creates an OCI ClusterRepo pointing at a registry that returns a 4xx status, tried in turn for 404, 401, and 403.
+**Act:** For each of HTTP 404, 401, and 403, creates an OCI ClusterRepo against a registry that answers every request with that status code.
 
 **Assert:**
-- Checks the `RepoDownloaded` condition becomes `False` with a message of `error <code>: <message>` for each status code.
-- Checks `NumberOfRetries` stays 0 (non-retryable errors aren't retried).
-- Checks no index ConfigMap is created for the failed repository.
+- Checks the `OCIDownloaded` condition becomes False with the message `error <code>: <status text>` (`Not Found`, `Unauthorized`, `Forbidden`).
+- Checks the repo makes no retries.
+- Checks no index ConfigMap is created.
+- Checks the repo is gone after deleting it.
 
 #### `TestOCIRepo4`
 **Arrange:**
-- None.
+- Starts a registry with `testingchart` (tags 0.1.0 and 0.0.1) and `testchart` (tags 1.0.0 and 0.1.1), where the `testchart` 1.0.0 manifest returns 429 for 1 minute after the first request.
 
-**Act:** Creates an OCI ClusterRepo (max 1 retry) against a registry that returns 429 (Too Many Requests) on the `testchart` manifest fetch, without a `RateLimit-Remaining` header.
+**Act:** Creates an OCI ClusterRepo for the registry root with a 65s refresh interval and exponential backoff of 1s min wait, 1s max wait, and 1 max retry.
 
 **Assert:**
-- Checks the initial download attempt exhausts its retry and leaves the `RepoDownloaded` condition `False` with `NumberOfRetries` reset to 0.
-- Checks that once the server's internal rate-limit window resets, the same ClusterRepo re-downloads successfully, with the index ConfigMap containing both `testingchart` and `testchart` entries (2 each) with populated digests.
-- Checks `NumberOfRetries` is 0 after the successful recovery.
+- Checks the `OCIDownloaded` condition becomes False with the retry count back at 0.
+- Checks the partial index has 2 charts, with 2 `testingchart` versions that have digests.
+- Checks the next refresh after the rate limit resets sets `OCIDownloaded` True with 0 retries.
+- Checks the full index has 2 versions each of `testchart` and `testingchart`, with digests.
+- Checks the repo is gone after deleting it.
 
 #### `TestOCIRepo5`
 **Arrange:**
-- None.
+- Starts the same registry as `TestOCIRepo4`, except it also sends `RateLimit-Remaining: 0;w=60` on HEAD requests for the `testchart` 1.0.0 manifest.
 
-**Act:** Creates an OCI ClusterRepo against a registry that returns 429 on the `testchart` manifest fetch, this time including a `RateLimit-Remaining` header.
+**Act:** Creates an OCI ClusterRepo for the registry root with the default refresh interval.
 
 **Assert:**
-- Checks the `RepoDownloaded` condition is initially `False`.
-- Checks that after the backoff/retry period, the ClusterRepo succeeds with both charts available in the index.
+- Checks the `OCIDownloaded` condition becomes False with the retry count back at 0.
+- Checks the partial index has 2 charts, with 2 `testingchart` versions that have digests.
+- Checks the repo later sets `OCIDownloaded` True with 0 retries.
+- Checks the full index has 2 versions each of `testchart` and `testingchart`, with digests.
+- Checks the repo is gone after deleting it.
 
 #### `TestOCIRepoMultipleChartRepos`
 **Arrange:**
-- Starts an OCI registry and pushes 300 separate chart repositories (`testingchart-0` .. `testingchart-299`), each with version `0.1.0`.
+- Starts a local OCI registry and pushes `testingchart` 0.1.0 to 300 repositories (`rancher/testingchart-0` through `rancher/testingchart-299`).
 
-**Act 1:** Creates an OCI ClusterRepo pointing at `testingchart-0` (no tag).
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart-0`.
 **Assert 1:**
-- Checks the ClusterRepo downloads resources and its status URL matches the registry path.
+- Checks the repo downloads and its status URL is the first URL.
 
-**Act 2:** Updates the ClusterRepo's URL to the same path with an explicit `:0.1.0` tag.
+**Act 2:** Updates the URL to `oci://<registry>/rancher/testingchart-0:0.1.0`.
 **Assert 2:**
-- Checks new resources are downloaded and the status URL matches the tagged URL.
+- Checks the URL change triggers a new download, the status URL becomes the tagged URL, and the observed generation increases.
 
 **Act 3:** Deletes the ClusterRepo.
 **Assert 3:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestOCIRepoWithOptions`
 **Arrange:**
-- Starts an OCI registry and pushes `testingchart` versions `0.1.0` and `1.0.0`.
+- Starts a local OCI registry with `testingchart` 0.1.0 and 1.0.0 pushed.
 
-**Act 1:** Creates an OCI ClusterRepo with `OCIOptions.TagFilter` set to `< 1.0.0`.
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with tag filter `< 1.0.0`.
 **Assert 1:**
-- Checks the downloaded index only contains `testingchart` entries satisfying the filter (just `0.1.0`).
+- Checks the repo downloads and the index only has `testingchart` versions matching `< 1.0.0` (1 version).
 
-**Act 2:** Updates the ClusterRepo to set `DownloadAllTags = true` while keeping the same tag filter.
+**Act 2:** Enables `DownloadAllTags` while keeping the tag filter.
 **Assert 2:**
-- Checks the index still contains only 1 matching `testingchart` entry (the tag filter is still enforced).
+- Checks the index still has only 1 `testingchart` version.
 
-**Act 3:** Updates the ClusterRepo again, clearing the tag filter while keeping `DownloadAllTags = true`.
+**Act 3:** Removes the tag filter, leaving `DownloadAllTags` enabled.
 **Assert 3:**
-- Checks the index now contains both `testingchart` entries (`0.1.0` and `1.0.0`).
+- Checks the index now has both `testingchart` versions.
 
 **Act 4:** Deletes the ClusterRepo.
 **Assert 4:**
-- Checks fetching the ClusterRepo by ID now returns an error.
+- Checks the repo is gone.
 
 #### `TestOCIRepoChartInstallation`
 **Arrange:**
-- Starts an OCI registry and pushes `testingchart` version `0.1.0`.
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed, creates an OCI ClusterRepo for `oci://<registry>/rancher`, and waits for it to download.
 
-**Act 1:** Creates an OCI ClusterRepo (`oci`) pointing at the registry.
+**Act 1:** Installs `testingchart` 0.1.0 from the repo as release `testreleasename` in `default`.
 **Assert 1:**
-- Checks the ClusterRepo downloads successfully.
+- Checks the app reaches `deployed`.
+- Checks the app has the `catalog.cattle.io/cluster-repo-name` label set to the ClusterRepo's name.
 
-**Act 2:** Installs `testingchart` from the repo as release `testreleasename` in the `default` namespace.
+**Act 2:** Uninstalls the chart.
 **Assert 2:**
-- Checks the App reaches `StatusDeployed`.
-- Checks the installed App carries a `catalog.cattle.io/cluster-repo-name` label equal to `oci`.
+- Checks the app is deleted.
 
-**Act 3:** Uninstalls the `testreleasename` release.
+**Act 3:** Deletes the ClusterRepo twice.
 **Assert 3:**
-- Checks the App resource is deleted (a Delete event is observed).
-
-**Act 4:** Deletes the ClusterRepo.
-**Assert 4:**
-- Checks deleting it again returns an error (already gone).
+- Checks the second delete fails because the repo is already gone.
 
 #### `TestOCIEnableRepo`
 **Arrange:**
-- Starts an OCI registry, pushes `testingchart`, creates an OCI ClusterRepo (`oci`) pointing at it, and confirms the initial download.
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed, creates an OCI ClusterRepo for `oci://<registry>/rancher`, and waits for it to download.
 
-**Act 1:** Disables the ClusterRepo (`Spec.Enabled = false`), adds a second chart (`testchart`) to the registry, and forces a refresh.
+**Act 1:** Disables the ClusterRepo, pushes `testchart` 1.0.0, then force-refreshes it.
 **Assert 1:**
-- Checks the index ConfigMap still contains only the original chart (1 entry) — the new chart isn't discovered while disabled.
+- Checks the index still has only 1 chart, since the repo is disabled.
 
-**Act 2:** Re-enables the ClusterRepo and forces another refresh.
+**Act 2:** Enables the ClusterRepo and force-refreshes it again.
 **Assert 2:**
-- Checks the index ConfigMap now contains both charts (2 entries).
+- Checks the index now has 2 charts.
+
+**Act 3:** Deletes the ClusterRepo twice.
+**Assert 3:**
+- Checks the second delete fails because the repo is already gone.
+
+## catalogv2/managedcharts/
 
 ### `rancher_managed_charts_test.go` Summary
 
-Verifies that Rancher's system-managed `rancher-aks-operator` chart tracks the latest available version from the `rancher-charts` repo, and correctly handles upgrades, degraded/working-version transitions, and icon serving for bundled catalogs.
+Verifies that giving the local cluster an AKS config makes Rancher install and keep auto-upgrading the managed `rancher-aks-operator` chart from the `rancher-charts` repo without user-supplied values, without retrying failed installs/upgrades repeatedly, and that Rancher serves chart icons from a prebuilt repo (with the suite setting `system-managed-charts-operation-timeout` to 50s and `system-feature-chart-refresh-seconds` to 21600 for the whole file, and resetting the local cluster's AKS config, the `rancher-charts` repo, and the AKS operator releases after each test).
 
 #### `TestInstallChartLatestVersion`
 **Arrange:**
-- Points the `rancher-charts` ClusterRepo at `charts-small-fork`'s `aks-integration-test-working-charts` branch (a controlled chart source with known versions) and waits for it to download.
+- Points the `rancher-charts` ClusterRepo at `rancher/charts-small-fork` branch `aks-integration-test-working-charts` and waits for it to download.
 
-**Act:** Enables AKS on the management cluster (sets `AKSConfig`).
+**Act:** Gives the local cluster an empty AKS config.
 
 **Assert:**
-- Checks the `rancher-aks-operator` app reaches `StatusDeployed`.
-- Checks the deployed chart version is `104.0.2+up1.9.0`.
-- Checks this version matches the latest version available from the catalog.
-- Checks no explicit Helm values are set on the app or chart.
+- Checks `rancher-aks-operator` is deployed in `cattle-system` at version 104.0.2+up1.9.0.
+- Checks that version matches the latest `rancher-aks-operator` version in `rancher-charts`.
+- Checks the app has no user values and no chart values.
 
 #### `TestUpgradeChartToLatestVersion`
 **Arrange:**
-- Points the `rancher-charts` ClusterRepo at `charts-small-fork`'s `aks-integration-test-working-charts` branch and waits for it to download.
+- Points `rancher-charts` at branch `aks-integration-test-working-charts` and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the repo's index ConfigMap.
 
-**Act 1:** Removes the top (truly-latest) `rancher-aks-operator` entry from the downloaded index ConfigMap, then enables AKS on the management cluster.
+**Act 1:** Gives the local cluster an empty AKS config.
 **Assert 1:**
-- Checks `rancher-aks-operator` deploys at the now-highest remaining version (`104.0.1+up1.9.0`), which is lower than the actual latest version recorded before the edit.
-- Checks no explicit Helm values are set.
+- Checks `rancher-aks-operator` is deployed at 104.0.1+up1.9.0, older than the removed version, with no values.
 
-**Act 2:** Reverts the index ConfigMap to its original content and forces the ClusterRepo to refresh.
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
 **Assert 2:**
-- Checks `rancher-aks-operator` is automatically upgraded to the restored (true) latest version.
-- Checks no explicit Helm values are set.
+- Checks the app is automatically upgraded to the restored latest version, reaches `deployed`, and still has no values.
 
 #### `TestUpgradeToWorkingVersion`
 **Arrange:**
-- Confirms the cluster has no `AKSConfig` and no `rancher-aks-charts` app yet.
-- Points the `rancher-charts` ClusterRepo at `charts-small-fork`'s `aks-integration-test-1` branch (whose second-highest `rancher-aks-operator` version is deliberately broken) and waits for it to download.
-- Records the current operation count for `rancher-aks-operator`.
+- Starts with the local cluster having no AKS config and `rancher-aks-operator` not installed.
+- Points `rancher-charts` at branch `aks-integration-test-1` (whose current latest version fails to install) and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the index ConfigMap.
 
-**Act 1:** Removes the newest index entry (promoting the broken version to "latest"), then enables AKS on the management cluster.
+**Act 1:** Gives the local cluster an empty AKS config.
 **Assert 1:**
-- Checks `rancher-aks-operator` reaches `StatusFailed`.
-- Checks no explicit Helm values are set.
-- Checks no more than 2 additional operations were created beyond the pre-recorded count (Rancher doesn't retry runaway on repeated failures).
+- Checks `rancher-aks-operator` reaches `failed`, with no values.
+- Checks at most 2 install operations are created for the failing version, so Rancher doesn't keep retrying.
 
-**Act 2:** Reverts the index ConfigMap to its original content and forces the ClusterRepo to refresh.
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
 **Assert 2:**
-- Checks `rancher-aks-operator` eventually reaches `StatusDeployed` at the restored (true) latest version.
+- Checks the app is automatically upgraded to the restored latest version, reaches `deployed`, with no values.
 
 #### `TestUpgradeToBrokenVersion`
 **Arrange:**
-- Points the `rancher-charts` ClusterRepo at `charts-small-fork`'s `aks-integration-test-2` branch and waits for it to download.
+- Points `rancher-charts` at branch `aks-integration-test-2` (whose current latest version later fails to install) and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the index ConfigMap.
 
-**Act 1:** Removes the newest index entry (forcing fallback to a lower, working version), then enables AKS on the management cluster.
+**Act 1:** Gives the local cluster an empty AKS config.
 **Assert 1:**
-- Checks `rancher-aks-operator` deploys successfully at the resulting version (`102.0.0+up1.1.0`).
-- Checks no explicit Helm values are set.
+- Checks `rancher-aks-operator` is first deployed at 102.0.0+up1.1.0, with no values.
 
-**Act 2:** Reverts the index ConfigMap to restore the true (broken) latest version entry and forces the ClusterRepo to refresh.
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
 **Assert 2:**
-- Checks `rancher-aks-operator` transitions to `StatusFailed` at the restored version.
-- Checks no more than 2 additional operations were created between the successful and failed states (bounded retries).
+- Checks the automatic upgrade to the restored (broken) latest version creates a new app revision that reaches `failed`, still with no values.
+- Checks at most 2 operations are created for the failed upgrade, so Rancher doesn't keep retrying.
 
 #### `TestServeIcons`
 **Arrange:**
-- Clones the `charts-small-fork` repo locally into the directory Rancher expects for a prebuilt/bundled catalog.
-- Creates a ClusterRepo pointing at the same fork (`main` branch) and waits for it to download; confirms more than 1 chart is discoverable and that the `system-catalog` setting starts as `external`.
+- Clones `rancher/charts-small-fork` into Rancher's local catalog directory under the fixed path for ClusterRepo `rancher-charts-small-fork`, so Rancher treats it as a prebuilt repo.
+- Creates that ClusterRepo on branch `main` and waits for it to download.
+- Changes the `system-catalog` setting from `external` to `bundled`.
 
-**Act:** Updates the `system-catalog` setting to `bundled`.
-
-**Assert:**
-- Checks the setting updates to `bundled`.
-- Checks fetching the `rancher-compliance` chart icon (served via the `file://`-backed bundled catalog) succeeds and returns non-empty image data.
-
-### `system_charts_version_test.go` Summary
-
-Verifies that Rancher-managed system charts (rancher-webhook and fleet) deploy at the version dictated by their version settings, deploying the latest available version when the configured constraint allows it.
-
-#### `TestInstallWebhook`
-**Arrange:**
-- Uninstalls the existing `rancher-webhook` release.
-
-**Act:** Sets the `rancher-webhook-version` setting to an exact version (`2.0.3+up0.3.3`).
+**Act:** Fetches the `rancher-compliance` chart icon, which uses a `file://` path, from the prebuilt repo.
 
 **Assert:**
-- Checks the `rancher-webhook` App is (re)created.
-- Checks the installed Helm release version matches the exact configured version.
+- Checks the repo downloads and has more than 1 chart.
+- Checks `system-catalog` started as `external` before the change.
+- Checks the icon is returned with a non-empty body.
 
-#### `TestInstallFleet`
-**Arrange:**
-- Uninstalls the existing `fleet` release from the `cattle-fleet-system` namespace.
-
-**Act:** Sets the `fleet-min-version` setting to a version below the latest available (`102.0.0+up0.6.0`).
-
-**Assert:**
-- Checks the `fleet` App is (re)created.
-- Checks the deployed Helm release version equals the latest version available from the catalog (Rancher deploys latest when the configured minimum is below it, not the minimum itself).
+## catalogv2/uiplugin/
 
 ### `ui_plugin_test.go` Summary
 
-Verifies that the `/v1/uiplugins` index and per-plugin file endpoints respect authentication requirements and content types, and that UIPlugin resources correctly fetch, cache, and retry compressed/uncompressed plugin archives from remote endpoints.
+With 4 plugins from the rancher/ui-plugin-examples repo installed into `cattle-ui-plugin-system` and ready (`uk-locale` 0.1.1, which needs no auth, `clock` 0.2.0, `top-level-product` 0.1.0 with `plugin.noCache=true`, and `homepage` 0.4.1), verifies that Rancher's `/v1/uiplugins` endpoint serves the plugin index and files with the right authentication rules, and that the UIPlugin controller handles compressed, failing, and unreachable endpoints.
 
 #### `TestGetIndexAuthenticated`
-**Arrange:**
-- None (relies on the suite's 4 pre-installed plugins: `uk-locale`, `clock`, `top-level-product`, `homepage`).
-
-**Act:** Requests `/v1/uiplugins` with an authenticated session (valid `R_SESS` cookie).
+**Act:** Fetches the `/v1/uiplugins` index with the admin session cookie.
 
 **Assert:**
-- Checks the returned index contains exactly 4 entries.
+- Checks the response is 200.
+- Checks the index contains all 4 installed plugins (`uk-locale`, `clock`, `top-level-product`, `homepage`).
 
 #### `TestGetIndexUnauthenticated`
-**Arrange:**
-- None.
-
-**Act:** Requests `/v1/uiplugins` without authentication.
+**Act:** Fetches the `/v1/uiplugins` index with no session.
 
 **Assert:**
-- Checks the returned index contains exactly 1 entry.
-- Checks that entry is `uk-locale` (the only plugin that doesn't require authentication).
+- Checks the response is 200.
+- Checks the index contains `uk-locale` and omits the 3 plugins that require authentication.
 
 #### `TestCorrectContentType`
-**Arrange:**
-- None.
-
-**Act:** Requests a specific plugin file (`/v1/uiplugins/top-level-product/0.1.0/plugin/top-level-product-0.1.0.umd.min.1.js`) with an authenticated session.
+**Act:** Fetches `top-level-product-0.1.0.umd.min.1.js` from the `top-level-product` plugin with the admin session.
 
 **Assert:**
-- Checks the response status is 200 OK.
-- Checks the `Content-Type` header matches the MIME type inferred from the file's `.js` extension.
+- Checks the response is 200.
+- Checks the `Content-Type` header matches the MIME type for `.js`.
 
 #### `TestGetSingleExtensionAuthenticated`
-**Arrange:**
-- None.
-
-**Act:** Requests the `clock` plugin's JS file with an authenticated session.
+**Act:** Fetches `clock-0.2.0.umd.min.js` from the `clock` plugin with the admin session.
 
 **Assert:**
-- Checks the response status is 200 OK.
+- Checks the response is 200.
 
 #### `TestGetSingleExtensionUnauthenticated`
-**Arrange:**
-- None.
-
-**Act:** Requests the `uk-locale` plugin's JS file without authentication.
+**Act:** Fetches `uk-locale-0.1.1.umd.min.js` from the `uk-locale` plugin, which doesn't require authentication, with no session.
 
 **Assert:**
-- Checks the response status is 200 OK (`uk-locale` doesn't require authentication).
+- Checks the response is 200.
 
 #### `TestGetSingleUnauthorizedExtension`
-**Arrange:**
-- None.
-
-**Act:** Requests the `clock` plugin's JS file without authentication.
+**Act:** Fetches `clock-0.2.0.umd.min.js` from the `clock` plugin, which requires authentication, with no session.
 
 **Assert:**
-- Checks the response status is 404 Not Found (`clock` requires authentication).
+- Checks the response is 404.
 
 #### `TestCompressedEndpoint`
 **Arrange:**
-- Starts a test server serving a compressed (`.tgz`) plugin archive.
+- Starts a local server that serves the homepage plugin as a `.tgz` file.
 
-**Act:** Updates the `homepage` UIPlugin to clear `Endpoint` and set `CompressedEndpoint` to the test server's URL.
+**Act:** Sets the `homepage` UIPlugin's `CompressedEndpoint` to that server with an empty `Endpoint`.
 
 **Assert:**
-- Checks a request for a file served from the compressed archive returns 200 OK or 425 Too Early.
-- Checks the plugin eventually reaches `Ready` status with the `CompressedEndpoint` configured.
+- Checks a request for `main.js` from the plugin returns 200, or 425 (Too Early) if it isn't cached yet.
+- Checks the UIPlugin becomes ready for its updated spec.
 
 #### `TestExponentialBackoff`
 **Arrange:**
-- Starts a test server that returns a server error on the first 2 requests, then serves the plugin successfully.
+- Starts a local server that fails its first 2 requests with 500, then serves the plugin files normally.
 
-**Act:** Updates the `homepage` UIPlugin's `Endpoint` to the test server's URL (clearing `CompressedEndpoint`).
+**Act:** Sets the `homepage` UIPlugin's `Endpoint` to that server.
 
 **Assert:**
-- Checks the plugin's `RetryNumber` progresses to 1, then to 2, remaining not-`Ready` at each step.
-- Checks that once the server starts succeeding, `RetryNumber` resets to 0 and the plugin becomes `Ready`.
+- Checks the controller retries while the server fails, reaching a retry count of 2, and never marks the UIPlugin ready during retries.
+- Checks the UIPlugin then becomes ready with its retry count reset to 0.
 
 #### `TestUnreachableCompressedEndpoint`
 **Arrange:**
-- Starts a working test server for the plugin's uncompressed endpoint.
+- Starts a local server that serves the plugin files normally.
 
-**Act:** Sets the `homepage` UIPlugin's `CompressedEndpoint` to an unreachable URL while also setting a working `Endpoint`.
+**Act:** Sets the `homepage` UIPlugin's `Endpoint` to that server and `CompressedEndpoint` to an unreachable URL.
 
 **Assert:**
-- Checks the plugin still reaches `Ready` status, falling back to the working `Endpoint` despite the broken `CompressedEndpoint`.
+- Checks the UIPlugin becomes ready for its updated spec by falling back to `Endpoint` when the compressed endpoint is unreachable.
 
 ## clusters/
 
@@ -659,82 +638,225 @@ Verifies that a persistent volume's source fields are protected from mutation an
 
 ## projects/
 
-### `project_user_test.go` Summary
+### `project_quotas_test.go` Summary
 
-Verifies that project members and owners can create namespaces within their assigned projects.
+Verifies project resource-quota API validation, propagation of a project's resource quota and
+namespace-default quota to namespace `ResourceQuota` objects on Rancher's local cluster, and
+tracking of the project's `usedLimit` as namespaces consume quota.
 
-#### `TestCreateNamespaceProjectMember`
-**Arrange:**
-- Creates a project ("TestProject") on the local cluster.
-- Creates a test user with global role "user".
-- Binds the test user to the project via a ProjectRoleTemplateBinding with role "project-member".
-- Waits until the test user is allowed to create namespaces (RBAC propagation).
-
-**Act:** Creates a namespace as the test user.
+#### `TestProjectResourceQuotaFields`
+**Act:** Creates a project on the local cluster with a resource quota and a namespace default
+resource quota of 100 pods each.
 
 **Assert:**
-- Checks the namespace is created without error.
-- Checks the created namespace's name is "testnamespace".
+- Checks the created project's `resourceQuota.limit.pods` is "100".
+- Checks the created project's `namespaceDefaultResourceQuota.limit.pods` is "100".
 
-#### `TestCreateNamespaceProjectOwner`
+#### `TestProjectQuotaAPIValidation`
 **Arrange:**
-- Creates a project ("TestProject") on the local cluster.
-- Creates a test user with global role "user".
-- Binds the test user to the project via a ProjectRoleTemplateBinding with role "project-owner".
-- Waits until the test user is allowed to create namespaces (RBAC propagation).
+- Creates a project on the local cluster without a quota (target of the field-mismatch update
+  case below).
 
-**Act:** Creates a namespace as the test user.
+**Act:** Attempts to create or update projects with four invalid resource-quota combinations: a
+resourceQuota without a namespaceDefaultResourceQuota, a namespaceDefaultResourceQuota without a
+resourceQuota, a namespace default quota (200 pods) exceeding the project quota (100 pods), and an
+update whose namespace default quota (pods only) omits a field the project quota defines
+(services).
 
 **Assert:**
-- Checks the namespace is created without error.
-- Checks the created namespace's name is "testnamespace".
+- Checks each of the four attempts is rejected with 422 Unprocessable Entity.
 
-### `resource_quota_test.go` Summary
+#### `TestProjectContainerDefaultResourceLimit`
+**Act 1:** Creates a project with a resource quota, a namespace default quota, and a
+containerDefaultResourceLimit (CPU/memory requests and limits).
+**Assert 1:**
+- Checks the created project's resourceQuota and containerDefaultResourceLimit are set.
 
-Verifies that resource quotas are correctly created, overridden, and propagated when projects and namespaces are created or updated.
+**Act 2:** Updates the project to clear its containerDefaultResourceLimit.
+**Assert 2:**
+- Checks the updated project's containerDefaultResourceLimit is nil.
 
-#### `TestCreateNamespaceWithQuotaInProject`
+#### `TestNamespaceResourceQuotaCreated`
 **Arrange:**
-- Creates a project with a resource quota limit of 500m CPU and a namespace-default resource quota limit of 200m CPU.
+- Creates a project on the local cluster with a 100-pod resource quota and namespace default.
 
-**Act:** Creates a namespace in that project.
+**Act:** Creates a namespace in the project with a quota annotation requesting 4 pods and 50
+configMaps.
 
 **Assert:**
-- Checks exactly 1 resource quota exists in the namespace.
-- Checks the quota's CPU limit matches the namespace default (200m).
+- Checks the controller creates a ResourceQuota in the namespace with exactly pods=4, dropping
+  configMaps since the project quota doesn't define it.
 
-#### `TestCreateNamespaceWithOverriddenQuotaInProject`
+#### `TestNamespaceDefaultQuotaApplied`
 **Arrange:**
-- Creates a project with a resource quota limit of 500m CPU and a namespace-default limit of 200m CPU.
+- Creates a project on the local cluster with a 100-pod resource quota and a 4-pod namespace
+  default.
 
-**Act:** Creates two namespaces in the project — one annotated to override its quota to 190m CPU, the other annotated to override to 400m CPU plus 50 ConfigMaps.
+**Act:** Creates a namespace in the project without an explicit quota annotation.
 
 **Assert:**
-- Checks the first namespace's quota is 190m CPU (an override below the default is honored).
-- Checks the second namespace's quota has CPU reset to 0 (the 400m override exceeds the project limit, so CPU is dropped instead of applied).
+- Checks the controller creates a ResourceQuota in the namespace with pods=4 (the project's
+  namespace default).
+
+#### `TestProjectQuotaUpdateAppliedToNamespace`
+**Arrange:**
+- Creates a project on the local cluster without a quota.
+- Creates a namespace in the project.
+
+**Act:** Updates the project to add a 100-pod resource quota and a 4-pod namespace default.
+
+**Assert:**
+- Checks the controller creates a ResourceQuota in the existing namespace with pods=4.
+
+#### `TestAddQuotaFromProjectWithNamespacePropagation`
+**Arrange:**
+- Creates a project on the local cluster with a 500m CPU-limit resource quota and a 200m CPU-limit
+  namespace default.
+- Creates a namespace in that project.
+
+**Act:** Adds a secrets limit to the project (20) and its namespace default (10).
+
+**Assert:**
+- Checks the namespace's ResourceQuota becomes exactly limits.cpu=200m and secrets=10.
 
 #### `TestRemoveQuotaFromProjectWithNamespacePropagation`
 **Arrange:**
-- Creates a project with resource quota limits of 500m CPU and 10 ConfigMaps, and namespace-default limits of 200m CPU and 5 ConfigMaps.
+- Creates a project on the local cluster with resource quota limits of 500m CPU and 10 ConfigMaps,
+  and namespace-default limits of 200m CPU and 5 ConfigMaps.
 - Creates a namespace in that project.
 
 **Act 1:** Removes the CPU limit from the project and its namespace default.
 **Assert 1:**
-- Checks the namespace's resource quota retains just the ConfigMaps limit (5).
+- Checks the namespace's ResourceQuota retains just the ConfigMaps limit (5).
 
 **Act 2:** Removes the ConfigMaps limit as well.
 **Assert 2:**
-- Checks the namespace's resource quota object is deleted entirely (detected via watch).
+- Checks the namespace's ResourceQuota object is deleted entirely.
 
-#### `TestAddQuotaFromProjectWithNamespacePropagation`
+#### `TestNamespaceQuotaExceedsProjectLimit`
 **Arrange:**
-- Creates a project with a resource quota limit of 500m CPU and a namespace-default limit of 200m CPU.
-- Creates a namespace in that project.
+- Creates a project on the local cluster with a 100-pod resource quota and namespace default.
 
-**Act:** Adds a Secrets limit to the project (20) and its namespace default (10), then updates the project.
+**Act:** Creates a namespace in the project with a quota annotation requesting 200 pods (exceeding
+the project limit).
 
 **Assert:**
-- Checks the namespace's resource quota updates to include both the existing CPU limit (200m) and the new Secrets limit (10).
+- Checks the controller creates a ResourceQuota in the namespace with pods=0 (the overused
+  resource zeroed).
+- Checks the project's usedLimit.pods remains "0" (the overused namespace isn't counted).
+
+#### `TestProjectUsedQuotaUpdated`
+**Arrange:**
+- Creates a project on the local cluster with a 100-pod resource quota and a 4-pod namespace
+  default.
+
+**Act:** Creates a namespace in the project without an explicit quota annotation.
+
+**Assert:**
+- Checks the project's usedLimit.pods becomes "4".
+
+#### `TestProjectUsedQuotaExactMatch`
+**Arrange:**
+- Creates a project on the local cluster with a 10-pod resource quota and a 2-pod namespace
+  default.
+- Creates two namespaces in the project requesting 2 and 8 pods respectively, so usedLimit.pods
+  reaches 10 (the full quota).
+
+**Act:** Attempts to reduce the project's quota to 8 pods and namespace default to 1 pod.
+
+**Assert:**
+- Checks the update is rejected with 422, since it would drop the limit below the already-used
+  amount.
+
+#### `TestProjectQuotaAddRemoveFields`
+**Arrange:**
+- Creates a project on the local cluster with a 10-pod resource quota and a 2-pod namespace
+  default.
+- Creates two namespaces in the project, each consuming the 2-pod default (usedLimit.pods reaches
+  4).
+
+**Act 1:** Attempts to add a services limit to the project whose namespace default (7) times the
+existing namespace count would exceed the project limit (10).
+**Assert 1:**
+- Checks the update is rejected with 422.
+
+**Act 2:** Adds a services limit to the project (10) with a valid 2-pod-per-namespace default.
+**Assert 2:**
+- Checks the update succeeds.
+- Checks the project's usedLimit.services becomes "4" as the controller propagates the default to
+  the existing namespaces.
+
+**Act 3:** Removes the services limit from the project.
+**Assert 3:**
+- Checks the update succeeds. (Does not assert usedLimit.services returns to "0" afterward, due to
+  a known eventual-consistency gap between the Norman and Wrangler informers — tracked as
+  rancher/rancher#55060.)
+
+#### `TestProjectQuotaCannotExceedWithExistingNamespaces`
+**Arrange:**
+- Creates a project on the local cluster without a quota.
+- Creates 4 namespaces in the project.
+
+**Act:** Attempts to set a 5-pod project quota with a 2-pod namespace default.
+
+**Assert:**
+- Checks the update is rejected with 422, since 2 pods × 4 existing namespaces (8) exceeds the
+  5-pod limit.
+
+### `project_user_test.go` Summary
+
+Verifies that users bound to the project-member and project-owner roles can create namespaces in
+their project on Rancher's local cluster.
+
+#### `TestCreateNamespaceProjectMember`
+**Arrange:**
+- Creates a project on the local cluster and a user with the global "user" role.
+- Binds the user to the project via a ProjectRoleTemplateBinding with role "project-member".
+- Waits until the user is allowed to create namespaces in the cluster (RBAC propagation).
+
+**Act:** Creates a namespace as the bound user.
+
+**Assert:**
+- Checks the namespace is created without error.
+- Checks the created namespace's name matches the requested name.
+
+#### `TestCreateNamespaceProjectOwner`
+**Arrange:**
+- Creates a project on the local cluster and a user with the global "user" role.
+- Binds the user to the project via a ProjectRoleTemplateBinding with role "project-owner".
+- Waits until the user is allowed to create namespaces in the cluster (RBAC propagation).
+
+**Act:** Creates a namespace as the bound user.
+
+**Assert:**
+- Checks the namespace is created without error.
+- Checks the created namespace's name matches the requested name.
+
+### `system_project_test.go` Summary
+
+Verifies that Rancher's local-cluster System project can't be deleted and that the default service
+accounts in system namespaces (other than kube-system) have token automounting disabled.
+
+#### `TestSystemProjectCannotBeDeleted`
+**Arrange:**
+- Finds the local cluster's "System" project.
+
+**Act:** Attempts to delete the System project.
+
+**Assert:**
+- Checks the delete is rejected with 405 Method Not Allowed.
+- Checks the error body contains "System Project cannot be deleted".
+
+#### `TestSystemNamespacesDefaultServiceAccount`
+**Arrange:**
+- Reads the `system-namespaces` setting to get the list of system namespace names.
+
+**Act:** Lists the `default` ServiceAccount in every namespace on the local cluster.
+
+**Assert:**
+- Checks the default ServiceAccount in each system namespace, except kube-system, has
+  automountServiceAccountToken=false.
+- Checks at least one such ServiceAccount was found.
 
 ## rbac/
 
@@ -810,7 +932,7 @@ Verifies that default RoleTemplates/GlobalRoles are automatically bound when clu
 
 ### `etcdbackups_test.go` Summary
 
-Verifies that the "backups-manage" ClusterRoleTemplate grants access to etcdbackups resources and that standard users cannot access them.
+Verifies that the "backups-manage" ClusterRoleTemplate grants access to etcdbackups resources on the local cluster, while the standard "user" global role does not.
 
 #### `TestBackupsManageRole`
 **Arrange:**
@@ -819,16 +941,17 @@ Verifies that the "backups-manage" ClusterRoleTemplate grants access to etcdback
 **Act:** Binds the restricted user to the "backups-manage" ClusterRoleTemplate on the local cluster via a CRTB.
 
 **Assert:**
-- Checks the user is eventually able to list "etcdbackups" resources (management.cattle.io) in the local cluster's namespace.
+- Checks the user eventually can list "etcdbackups" resources (management.cattle.io) in the local cluster's namespace.
 
 #### `TestStandardUsersCannotAccessBackups`
 **Arrange:**
 - Creates a standard user with only the "user" global role.
+- Confirms the "user" role's permissions have propagated by waiting until the user can create secrets in the "cattle-global-data" namespace.
 
-**Act:** Repeatedly checks whether the user can list "etcdbackups" resources in the local cluster's namespace, to allow time for RBAC to sync.
+**Act:** Checks whether the user can list "etcdbackups" resources in the local cluster's namespace.
 
 **Assert:**
-- Checks the user is never granted access to list etcdbackups — the standard "user" role does not grant it.
+- Checks access is denied — the standard "user" global role does not grant it.
 
 ### `features_test.go` Summary
 
@@ -854,9 +977,52 @@ Verifies that only admins can mutate Feature resources and that standard users c
 - Checks the standard user can eventually list features once RBAC propagates, and the list is non-empty.
 - Checks the admin can list a non-empty set of features.
 
+### `global_role_bindings_test.go` Summary
+
+Verifies validation and immutability rules on GlobalRoleBindings' role and subject fields.
+
+#### `TestGRBCannotUpdateGlobalRoleID`
+**Arrange:**
+- Creates a user.
+- Creates a GlobalRoleBinding binding the user to GlobalRole "nodedrivers-manage".
+
+**Act:** Attempts to update the GlobalRoleBinding's `globalRoleId` to "settings-manage".
+
+**Assert:**
+- Checks `globalRoleId` remains "nodedrivers-manage" after the update.
+
+#### `TestGRBGlobalRoleMustExist`
+**Arrange:**
+- Creates a user.
+
+**Act:** Attempts to create a GlobalRoleBinding referencing a non-existent GlobalRole ("somefakerole").
+
+**Assert:**
+- Checks the creation fails with 404 Not Found.
+
+#### `TestGRBCannotUpdateSubject`
+**Arrange:**
+- Creates two users (user1, user2).
+- Creates a GlobalRoleBinding binding user1 to GlobalRole "nodedrivers-manage".
+
+**Act:** Attempts to update the GlobalRoleBinding's `userId` and `groupPrincipalId` fields.
+
+**Assert:**
+- Checks `userId` remains user1's ID after attempting to change it to user2's ID.
+- Checks `userId` still remains user1's ID, and `groupPrincipalId` stays empty, after attempting to set `groupPrincipalId`.
+
+#### `TestGRBTargetsUserOrGroup`
+**Arrange:**
+- Creates a user.
+
+**Act:** Attempts to create GlobalRoleBindings with both `userId` and `groupPrincipalId` set, and with neither set.
+
+**Assert:**
+- Checks both attempts fail with 422 Unprocessable Entity.
+
 ### `global_roles_test.go` Summary
 
-Verifies access control on global roles, global role bindings, and the visibility differences between the "user" and "user-base" global roles.
+Verifies visibility differences between the "user" and "user-base" global roles, and access control around creating, updating, and deleting GlobalRoles (including builtin ones).
 
 #### `TestUserVsUserBaseGlobalRoleVisibility`
 **Arrange:**
@@ -883,18 +1049,6 @@ Verifies access control on global roles, global role bindings, and the visibilit
 - Checks the users with "user", "clusters-create", and "kontainerdrivers-manage" roles each see 3 kontainer drivers.
 - Checks the user with the "settings-manage" role sees 0 kontainer drivers.
 
-#### `TestBuiltinGlobalRoleOnlyNewUserDefaultEditable`
-**Arrange:**
-- Retrieves the builtin "admin" GlobalRole, confirming it is builtin, has no "remove" link, and `newUserDefault` is false.
-
-**Act:** Updates the "admin" GlobalRole, attempting to change `name`, `description`, `rules`, `newUserDefault`, and `builtin` simultaneously.
-
-**Assert:**
-- Checks `name` remains unchanged.
-- Checks `rules` are not wiped out.
-- Checks `builtin` remains true.
-- Checks only `newUserDefault` changes, becoming true.
-
 #### `TestOnlyAdminCanCRUDGlobalRoles`
 **Arrange:**
 - Creates a standard user with the "user" global role.
@@ -907,56 +1061,29 @@ Verifies access control on global roles, global role bindings, and the visibilit
 - Checks the standard user sees no GlobalRoles when listing.
 - Checks the standard user receives 403 Forbidden when attempting to delete a GlobalRole.
 
+#### `TestBuiltinGlobalRoleOnlyNewUserDefaultEditable`
+**Arrange:**
+- Retrieves the builtin "kontainerdrivers-manage" GlobalRole, confirming it is builtin, has no "remove" link, and `newUserDefault` is false.
+
+**Act:** Updates the "kontainerdrivers-manage" GlobalRole, attempting to change `name`, `description`, `rules`, `newUserDefault`, and `builtin` simultaneously.
+
+**Assert:**
+- Checks `name` remains unchanged.
+- Checks `rules` are not wiped out.
+- Checks `builtin` remains true.
+- Checks only `newUserDefault` changes, becoming true.
+
 #### `TestAdminCannotDeleteBuiltinGlobalRole`
 **Arrange:**
-- Retrieves the builtin "admin" GlobalRole, confirming it is builtin and has no "remove" link.
+- Retrieves the builtin "kontainerdrivers-manage" GlobalRole, confirming it is builtin and has no "remove" link.
 
-**Act:** Creates a GlobalRole with `builtin: true`, updates the builtin "admin" role, and attempts to delete the builtin "admin" role.
+**Act:** Creates a GlobalRole with `builtin: true`, updates the builtin "kontainerdrivers-manage" role, and attempts to delete it.
 
 **Assert:**
 - Checks the newly created GlobalRole ignores the `builtin: true` field (the created role is not builtin).
 - Checks the admin can update the builtin role without error.
 - Checks deleting the builtin role fails with 403 Forbidden.
 - Checks the error message contains "cannot delete builtin global roles".
-
-#### `TestGRBCannotUpdateGlobalRoleID`
-**Arrange:**
-- Creates a user.
-- Creates a GlobalRoleBinding for the user with `globalRoleId` "nodedrivers-manage".
-
-**Act:** Attempts to update the GlobalRoleBinding's `globalRoleId` to "settings-manage".
-
-**Assert:**
-- Checks `globalRoleId` remains "nodedrivers-manage" after the update.
-
-#### `TestGRBGlobalRoleMustExist`
-**Arrange:**
-- Creates a user.
-
-**Act:** Attempts to create a GlobalRoleBinding referencing a non-existent GlobalRole ("somefakerole").
-
-**Assert:**
-- Checks the creation fails with 404 Not Found.
-
-#### `TestGRBCannotUpdateSubject`
-**Arrange:**
-- Creates two users (user1, user2).
-- Creates a GlobalRoleBinding binding user1 to "nodedrivers-manage".
-
-**Act:** Attempts to update the GlobalRoleBinding's `userId` to user2's ID, then attempts to set `groupPrincipalId`.
-
-**Assert:**
-- Checks `userId` remains user1's ID after attempting to change it to user2.
-- Checks `userId` remains user1's ID and `groupPrincipalId` stays empty after attempting to set `groupPrincipalId`.
-
-#### `TestGRBTargetsUserOrGroup`
-**Arrange:**
-- Creates a user.
-
-**Act:** Attempts to create GlobalRoleBindings with both `userId` and `groupPrincipalId` set, and with neither set.
-
-**Assert:**
-- Checks both attempts fail with 422 Unprocessable Entity.
 
 ### `impersonation_test.go` Summary
 
@@ -974,7 +1101,7 @@ Verifies that impersonation permissions are correctly granted by cluster roles a
 
 ### `projects_test.go` Summary
 
-Verifies role-based access control on projects, resource quotas, namespace lifecycle, and the system project.
+Verifies project-scoped RBAC: that a project creator is bound as its owner with owner-level access in the project's namespaces, and that read-only project members cannot edit secrets or move namespaces between projects.
 
 #### `TestProjectCreatorGetsOwnerBindings`
 **Arrange:**
@@ -984,7 +1111,7 @@ Verifies role-based access control on projects, resource quotas, namespace lifec
 **Act:** The user creates a project (retrying until RBAC permits it) and a namespace within it.
 
 **Assert:**
-- Checks the user can eventually create the namespace once RBAC propagates, and the project becomes active.
+- Checks the project becomes active and the namespace is created once RBAC propagates.
 - Checks the user can list pods in the namespace.
 - Checks the user has a `project-owner` (or `project-owner-aggregator`) RoleBinding in the namespace.
 - Checks the user can create deployments (extensions group) in the namespace.
@@ -1014,147 +1141,6 @@ Verifies role-based access control on projects, resource quotas, namespace lifec
 **Assert:**
 - Checks the patch attempt is forbidden.
 
-#### `TestSystemProjectCreated`
-**Act:** Lists all projects in the local cluster.
-
-**Assert:**
-- Checks the Default project exists with label `authz.management.cattle.io/default-project`="true".
-- Checks the System project exists with label `authz.management.cattle.io/system-project`="true".
-
-#### `TestSystemProjectCannotBeDeleted`
-**Arrange:**
-- Retrieves the System project from the local cluster's project list.
-
-**Act:** Attempts to delete the System project.
-
-**Assert:**
-- Checks deletion fails with 405 Method Not Allowed.
-- Checks the error message contains "System Project cannot be deleted".
-
-#### `TestSystemNamespacesDefaultServiceAccount`
-**Arrange:**
-- Reads the "system-namespaces" setting to get the list of system namespace names.
-
-**Act:** Lists the default ServiceAccount object across namespaces.
-
-**Assert:**
-- Checks every default ServiceAccount in a system namespace (excluding kube-system) has `automountServiceAccountToken=false`.
-
-#### `TestProjectResourceQuotaFields`
-**Act:** Creates a project on the local cluster with a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=100).
-
-**Assert:**
-- Checks `project.resourceQuota.limit.pods` is "100".
-- Checks `project.namespaceDefaultResourceQuota.limit.pods` is "100".
-
-#### `TestProjectQuotaAPIValidation`
-**Act:** Attempts several invalid project quota configurations: a `resourceQuota` without a `namespaceDefaultResourceQuota`, a `namespaceDefaultResourceQuota` without a `resourceQuota`, a namespace default quota (pods=200) exceeding the project quota (pods=100), and — via update on a freshly created project — a namespace default quota missing the "services" field defined on the project quota (pods=100, services=100).
-
-**Assert:**
-- Checks `resourceQuota` without `namespaceDefaultResourceQuota` fails with 422.
-- Checks `namespaceDefaultResourceQuota` without `resourceQuota` fails with 422.
-- Checks the namespace default quota exceeding the project quota fails with 422.
-- Checks the namespace default quota missing a field defined on the project quota fails with 422.
-
-#### `TestProjectContainerDefaultResourceLimit`
-**Arrange:**
-- None beyond suite defaults.
-
-**Act 1:** Creates a project on the local cluster with a ResourceQuota (pods=100), a NamespaceDefaultResourceQuota (pods=100), and a ContainerDefaultResourceLimit (requests 1 CPU / 1Gi memory, limits 2 CPU / 2Gi memory).
-**Assert 1:**
-- Checks the project stores the ResourceQuota.
-- Checks the project stores the ContainerDefaultResourceLimit.
-
-**Act 2:** Updates the project, setting `containerDefaultResourceLimit` to nil.
-**Assert 2:**
-- Checks the project's `containerDefaultResourceLimit` becomes nil.
-
-#### `TestNamespaceResourceQuotaCreated`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=100).
-
-**Act:** Creates a namespace in the project with an explicit quota annotation requesting 4 pods.
-
-**Assert:**
-- Checks a k8s ResourceQuota object is created in the namespace with a pods limit of 4.
-
-#### `TestNamespaceDefaultQuotaApplied`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=4).
-
-**Act:** Creates a namespace in the project without an explicit quota annotation.
-
-**Assert:**
-- Checks the k8s ResourceQuota created in the namespace uses the project's default limit of 4 pods.
-
-#### `TestProjectUsedQuotaUpdated`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=4).
-
-**Act:** Creates a namespace in the project without an explicit quota, so the project's default applies.
-
-**Assert:**
-- Checks the project's `usedLimit.pods` updates to 4.
-
-#### `TestProjectQuotaUpdateAppliedToNamespace`
-**Arrange:**
-- Creates a project on the local cluster without a quota.
-- Creates a namespace in the project (no quota exists yet).
-
-**Act:** Updates the project to add a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=4).
-
-**Assert:**
-- Checks the controller creates a k8s ResourceQuota in the existing namespace using the new default of 4 pods.
-
-#### `TestProjectUsedQuotaExactMatch`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=10) and a NamespaceDefaultResourceQuota (pods=2).
-- Creates two namespaces with explicit quotas of 2 and 8 pods respectively (totaling 10, matching the full project limit).
-- Confirms the project's `usedLimit.pods` reaches 10.
-
-**Act:** Attempts to reduce the project's quota to pods=8 (with a namespace default of pods=1).
-
-**Assert:**
-- Checks the update fails with 422 Unprocessable Entity.
-
-#### `TestProjectQuotaAddRemoveFields`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=10) and a NamespaceDefaultResourceQuota (pods=2).
-- Creates two namespaces using the default quota (2 pods each); confirms the project's `usedLimit.pods` reaches 4.
-
-**Act 1:** Attempts to add a "services" field to the project quota (services=10) and namespace default (services=7) — a default that, multiplied across the 2 existing namespaces, would exceed the project limit.
-**Assert 1:**
-- Checks the update fails with 422 Unprocessable Entity.
-
-**Act 2:** Updates the project with a valid "services" default (project services=10, namespace default services=2).
-**Assert 2:**
-- Checks the update succeeds.
-- Checks the controller propagates the new default to the existing namespaces, bringing the project's `usedLimit.services` to 4.
-
-**Act 3:** Removes the "services" field from both the project quota and the namespace default.
-**Assert 3:**
-- Checks the update succeeds.
-
-#### `TestProjectQuotaCannotExceedWithExistingNamespaces`
-**Arrange:**
-- Creates a project on the local cluster without a quota.
-- Creates 4 namespaces in the project (no quotas).
-
-**Act:** Attempts to set the project quota to pods=5 with a namespace default of pods=2 (2 × 4 = 8 > 5).
-
-**Assert:**
-- Checks the update fails with 422 Unprocessable Entity.
-
-#### `TestNamespaceQuotaExceedsProjectLimit`
-**Arrange:**
-- Creates a project on the local cluster with a ResourceQuota (pods=100) and a NamespaceDefaultResourceQuota (pods=100).
-
-**Act:** Creates a namespace in the project requesting an explicit quota of 200 pods, exceeding the project's limit.
-
-**Assert:**
-- Checks a k8s ResourceQuota is still created in the namespace.
-- Checks the pods value is not set to the requested 200 (overused resources are zeroed rather than granted).
-
 ### `rtbs_test.go` Summary
 
 Verifies role template binding behavior, including inheritance chains, immutability constraints, and access revocation when bindings are deleted.
@@ -1162,7 +1148,7 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 #### `TestPRTBRoleTemplateInheritance`
 **Arrange:**
 - Creates a user with the "user" global role.
-- Creates a namespace in the suite's shared project (created in `SetupSuite` on the local cluster).
+- Creates a namespace in the suite's shared project (local cluster).
 - Creates a secret in that namespace.
 - Confirms the user cannot get the secret before any binding exists.
 - Creates RoleB (project-scoped) with a rule granting "get" on that specific secret.
@@ -1172,14 +1158,17 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert 1:**
 - Checks the user can get the secret (permission inherited from RoleB through RoleA).
 
-**Act 2:** Deletes the PRTB, then creates RoleC that inherits RoleA (chain: RoleC → RoleA → RoleB) and binds the user to RoleC via a new PRTB.
+**Act 2:** Deletes the PRTB.
 **Assert 2:**
-- Checks the user's secret access is revoked once the first PRTB is deleted.
-- Checks the user regains access to the secret via the chained inheritance.
-- Checks the user cannot access a second, newly created secret not covered by any rule.
+- Checks the user's access to the secret is revoked.
 
-**Act 3:** Updates RoleB's rules to add "get" access to the second secret.
+**Act 3:** Creates RoleC, which inherits RoleA (chain RoleC → RoleA → RoleB), and binds the user to RoleC via a new PRTB.
 **Assert 3:**
+- Checks the user regains access to the secret via the chained inheritance.
+- Checks the user is forbidden on a second, newly created secret not covered by any rule.
+
+**Act 4:** Updates RoleB's rules to add "get" access to the second secret.
+**Assert 4:**
 - Checks the user gains access to the second secret too, without any new binding (the change propagates through the inheritance chain).
 
 #### `TestCRTBRoleTemplateInheritance`
@@ -1194,14 +1183,30 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert 1:**
 - Checks the user can get the namespace (permission inherited from RoleB through RoleA).
 
-**Act 2:** Deletes the CRTB, waits for the namespace access to be revoked, then creates RoleC that inherits RoleA (chain: RoleC → RoleA → RoleB), binds the user to RoleC via a new CRTB, and creates a second namespace.
+**Act 2:** Deletes the CRTB.
 **Assert 2:**
-- Checks the user regains access to the first namespace via the chained inheritance.
-- Checks the user cannot access the second, newly created namespace.
+- Checks the user's namespace access is revoked.
 
-**Act 3:** Updates RoleB's rules to add "get" access to the second namespace.
+**Act 3:** Creates RoleC, which inherits RoleA (chain RoleC → RoleA → RoleB), and binds the user to RoleC via a new CRTB.
 **Assert 3:**
+- Checks the user regains access to the first namespace via the chained inheritance.
+- Checks the user is forbidden on a second, newly created namespace not covered by any rule.
+
+**Act 4:** Updates RoleB's rules to add "get" access to the second namespace.
+**Assert 4:**
 - Checks the user gains access to the second namespace too, while retaining access to the first.
+
+#### `TestAPIGroupInRoleTemplate`
+**Arrange:**
+- Skips the test if the admin cannot see any nodes in the local cluster.
+- Creates a standard user with the "user" global role; confirms the user cannot see any nodes yet.
+- Creates a cluster-scoped RoleTemplate with rules granting get/list/watch on "nodes"/"nodepools" (management.cattle.io) and full access ("*") on "scheduling.k8s.io", and waits for it to become available.
+
+**Act:** Binds the user to the RoleTemplate via a CRTB on the local cluster.
+
+**Assert:**
+- Checks the user eventually can list nodes.
+- Checks the user cannot delete a node (the role only grants get/list/watch).
 
 #### `TestRemovingPRTBRevokesNamespaceAccess`
 **Arrange:**
@@ -1216,18 +1221,6 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 - Checks the user loses access to the second project's namespace.
 - Checks the user retains access to the first project's namespace.
 
-#### `TestAPIGroupInRoleTemplate`
-**Arrange:**
-- Skips the test if the admin cannot see any nodes in the local cluster.
-- Creates a standard user with the "user" global role; confirms the user cannot see any nodes yet.
-- Creates a cluster-scoped RoleTemplate with rules granting get/list/watch on "nodes"/"nodepools" (management.cattle.io) and full access ("*") on "scheduling.k8s.io", and waits for it to become available.
-
-**Act:** Binds the user to the RoleTemplate via a CRTB on the local cluster.
-
-**Assert:**
-- Checks the user eventually can list nodes.
-- Checks the user cannot delete a node (the role only grants get/list/watch).
-
 #### `TestDeletingPRTBRemovesClusterAccess`
 **Arrange:**
 - Creates a user.
@@ -1240,19 +1233,6 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert:**
 - Checks the membership ClusterRoleBinding is deleted.
 - Checks the user loses cluster access entirely (no clusters listed, and a 403 when fetching the local cluster by ID).
-
-#### `TestDeletingPRTBCleansUpLegacyMembershipLabels`
-**Arrange:**
-- Creates a user.
-- Admin creates a PRTB granting the user "project-member" on the suite's shared project (local cluster).
-- Confirms the user can see the local cluster.
-- Confirms a membership ClusterRoleBinding exists, labeled with a key derived from the PRTB's ID.
-
-**Act:** Deletes the PRTB.
-
-**Assert:**
-- Checks the membership ClusterRoleBinding is removed.
-- Checks the user loses cluster access.
 
 #### `TestCRTBCannotTargetUsersAndGroup`
 **Arrange:**
@@ -1288,18 +1268,20 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 
 ### `serviceaccounttoken_test.go` Summary
 
-Verifies that concurrent requests to ensure a service account secret do not create duplicate secrets.
+Verifies that concurrent calls to ensure a token Secret for a service account converge on exactly one Secret, correctly referenced by the service account.
 
 #### `TestSingleSecretForServiceAccount`
 **Arrange:**
-- Gets a Kubernetes clientset for the local cluster.
+- Gets a Kubernetes clientset for the cluster under test (`local`).
 - Creates a namespace.
 - Creates a service account in that namespace.
 
 **Act:** Calls `EnsureSecretForServiceAccount` 10 times concurrently for the same service account.
 
 **Assert:**
-- Checks only 1 secret is created in the namespace despite the 10 concurrent calls.
+- Checks all 10 concurrent calls return no error.
+- Checks exactly 1 token Secret exists for the service account despite the 10 concurrent calls.
+- Checks the service account's secret-ref annotation points to that one remaining Secret, confirming it isn't an orphan.
 
 ## settings/
 
@@ -1328,7 +1310,8 @@ Verifies that settings can be created, read, updated, and deleted according to t
 **Act:** Retrieves the read-only "cacerts" setting by ID.
 
 **Assert:**
-- Checks the setting is retrieved without error.
+- Checks the setting is retrieved without error, with ID "cacerts".
+- Checks the setting has no "update" link.
 
 #### `TestDeleteReadOnly`
 **Arrange:**
@@ -1368,7 +1351,10 @@ Verifies that settings can be created, read, updated, and deleted according to t
 - Checks the returned setting's value is "b".
 
 #### `TestUpdateNonExisting`
-**Act:** Sends a PUT request to update a setting that does not exist.
+**Arrange:**
+- Creates a setting, and confirms a direct PUT to its ID returns 200 (so the helper request itself is known-good).
+
+**Act:** Sends the same PUT request against a nonexistent setting ID.
 
 **Assert:**
 - Checks the response status is 404 Not Found.
@@ -1385,129 +1371,126 @@ Verifies that settings can be created, read, updated, and deleted according to t
 - Checks the standard user does not see the "update" link.
 </content>
 
-## steveapi/
+## steveapi/extension/
 
-### `steve_api_test.go` Summary
+### `extension_test.go` Summary
 
-Verifies that the Steve API (Rancher's REST API wrapper) provides access to extension API servers with proper authentication and authorization, and that listing, filtering, sorting, and CRUD operations on secrets respect user permissions across projects and namespaces.
+Verifies that Rancher's extension API server on the local cluster serves discovery and OpenAPI only to authenticated users, authorizes only its OpenAPI endpoints, and supports creating, updating and deleting `ext.cattle.io` resources through Steve.
 
-This file uses a shared-base-struct embedding pattern: the unexported `steveAPITestSuite` holds common test methods (`TestList`, `TestLinks`, `TestCRUD`), while `LocalSteveAPITestSuite` and `DownstreamSteveAPITestSuite` each embed it with their own `SetupSuite` (one against the local cluster, one against a real downstream cluster). A test method defined on the shared base runs once per concrete suite.
-
-#### `TestExtensionAPIServer` (LocalSteveAPITestSuite)
-**Arrange:**
-- Builds a discovery client against the extension API server using the admin token.
-- Builds a second discovery client against the same server with no auth token.
-
-**Act:** Queries server groups, the OpenAPI v2 schema, and the OpenAPI v3 paths with both the authenticated and unauthenticated clients.
+#### `TestExtensionAPIServer`
+**Act:** Queries discovery and the OpenAPI v2/v3 documents against the extension API server, as an authenticated admin and again without credentials.
 
 **Assert:**
-- Checks the authenticated client retrieves server groups, a non-nil OpenAPI v2 schema, and OpenAPI v3 paths.
-- Checks the unauthenticated client's requests to all three endpoints return forbidden errors.
+- Checks the admin sees the `ext.cattle.io` API group, a non-nil OpenAPI v2 document, and at least one OpenAPI v3 path.
+- Checks that listing groups, fetching OpenAPI v2, and fetching OpenAPI v3 without credentials each return a Forbidden error.
 
 #### `TestExtensionAPIServerAuthorization`
-**Arrange:**
-- Builds an authenticated HTTP client against the extension API server.
-
-**Act:** Sends GET requests to each of 8 endpoints (`/openapi/v2`, `/openapi/v3`, `/openapi/v3/version`, `/metrics`, `/healthz`, `/readyz`, `/livez`, `/version`).
+**Act:** Sends a GET request to several paths under the extension API server as the admin.
 
 **Assert:**
-- Checks `/openapi/v2`, `/openapi/v3`, and `/openapi/v3/version` return 200 OK.
-- Checks `/metrics`, `/healthz`, `/readyz`, `/livez`, and `/version` return 403 Forbidden.
+- Checks `/openapi/v2`, `/openapi/v3` and `/openapi/v3/version` return 200.
+- Checks `/metrics`, `/healthz`, `/readyz`, `/livez` and `/version` return 403.
 
 #### `TestExtensionAPIServerCreateRequests`
-**Arrange:**
-- Builds an authenticated HTTP client against the extension API server.
-
-**Act:** Posts a JSON payload to create a kubeconfig (name, clusters, description, TTL) and a JSON payload to create a selfuser resource.
+**Act:** Creates a kubeconfig and a selfuser through Steve's `ext.cattle.io` endpoints.
 
 **Assert:**
-- Checks creating the kubeconfig returns 201 Created.
-- Checks creating the selfuser resource returns 201 Created.
+- Checks the kubeconfig create returns 201 with a generated name, clusters `["local"]` and current context `local`.
+- Checks the selfuser create returns 201 with the caller's user ID populated in its status.
 
 #### `TestExtensionAPIServerUpdateRequests`
 **Arrange:**
-- Creates a test kubeconfig via the extension API.
+- Creates a kubeconfig for the local cluster through Steve.
 
-**Act:** Sends PUT requests updating the existing kubeconfig's description and updating a non-existent kubeconfig.
+**Act:** Updates the kubeconfig's description via PUT, then PUTs an update for a kubeconfig named `does-not-exist`.
 
 **Assert:**
-- Checks updating the existing kubeconfig with a modified description returns 200 OK.
-- Checks updating a non-existent kubeconfig returns 404 Not Found.
+- Checks updating the existing kubeconfig returns 200 with the new description.
+- Checks updating the missing kubeconfig returns 404 with a "not found" message.
 
 #### `TestExtensionAPIServerDeleteRequests`
 **Arrange:**
-- Creates a test kubeconfig via the extension API.
+- Creates a kubeconfig for the local cluster through Steve.
 
-**Act:** Sends DELETE requests for the existing kubeconfig and for a non-existent kubeconfig.
-
-**Assert:**
-- Checks deleting the existing kubeconfig returns 204 No Content.
-- Checks deleting a non-existent kubeconfig returns 404 Not Found.
-
-#### `TestExtensionAPIServer` (DownstreamSteveAPITestSuite)
-**Arrange:**
-- Builds a discovery client against the extension API server on the downstream cluster using the admin token.
-
-**Act:** Queries server groups, the OpenAPI v2 schema, and the OpenAPI v3 paths.
+**Act:** Deletes the kubeconfig, then deletes a kubeconfig named `does-not-exist`.
 
 **Assert:**
-- Checks all three requests return 404 Not Found, since the extension API is not served on downstream clusters.
+- Checks deleting the existing kubeconfig returns 204.
+- Checks deleting the missing kubeconfig returns 404 with a "not found" message.
 
-#### `TestList`
-**Arrange:**
-- Creates 2 projects and 9 namespaces (7 assigned across the 2 projects, 2 unassigned), each seeded with up to 5 test secrets carrying shared and per-secret labels (used for filter/selector tests).
-- Creates 5 test users with varying access scopes: `user-a` (project-owner on 1 project), `user-b` (namespace-scoped role binding granting get/list on secrets in 1 namespace), `user-c` (namespace-scoped role binding with a resource-name restriction across 3 namespaces), `user-d` (project-owner on 2 projects plus namespace-scoped bindings in 2 more namespaces), and `user-e` (cluster-owner).
+## steveapi/secrets/
 
-**Act:** Runs 139 table-driven subtests, each issuing a Steve API list request for secrets as a given user, optionally scoped to a namespace, with a given query string.
+### `crud_test.go` Summary
 
-**Assert:**
-- Checks each user sees only secrets in namespaces they have access to via project membership or role bindings.
-- Checks label and field selectors correctly filter results across multiple namespaces or within a single namespace.
-- Checks filter queries combining AND (multiple `filter` params), OR (comma-separated values), and NOT (`!=`) operators return the correct set of secrets.
-- Checks sorting by `metadata.name` and `metadata.namespace`, ascending and descending, returns results in the expected order.
-- Checks pagination with `pagesize` returns the correct first page, and subsequent pages fetched with `page` plus a `continue`/`revision` token return the correct remaining results.
-- Checks `projectsornamespaces` restricts results to the named projects or namespaces, and `projectsornamespaces!=` excludes them.
-- Checks `summary` queries return aggregated counts per property value (e.g. `metadata.name`, `metadata.namespace`, `metadata.state.name`) reflecting only the current page.
+Verifies that an admin can create, read, update and delete secrets through Steve on the local cluster, and that Steve returns the expected id and links for them.
 
 #### `TestLinks`
 **Arrange:**
-- Creates a secret via the Steve API, then reads it back by ID.
+- Creates a secret with one data key (`foo`) in a namespace through Steve.
 
-**Act:** Deletes the secret.
+**Act:** Reads the secret back by ID.
 
 **Assert:**
-- Checks the secret's `id` field is formatted as `namespace/name`.
-- Checks the returned `links` map's `self`, `view`, `update`, `patch`, and `remove` entries point to the correct endpoints: `/v1/secrets/{namespace}/{name}` for Steve API operations, and `/api/v1/namespaces/{namespace}/secrets/{name}` for the Kubernetes view link.
+- Checks the id is `<namespace>/<name>`.
+- Checks the `self`, `update`, `patch` and `remove` links point to `/v1/secrets/<namespace>/<name>`, and the `view` link points to `/api/v1/namespaces/<namespace>/secrets/<name>`.
 
 #### `TestCRUD`
 **Arrange:**
-- None beyond obtaining a Steve client for the cluster.
+- Runs the same lifecycle twice: once through the global `/v1/secrets` endpoint (namespace given on the object) and once through the namespaced `/v1/secrets/<namespace>` endpoint.
 
-**Act:** For both the global (`/v1/secrets`) and namespaced (`/v1/secrets/{namespace}`) endpoints, creates a secret, reads it, updates its data field, deletes it, then reads it again.
+**Act 1:** Creates a secret with data key `foo`.
+**Assert 1:**
+- Checks a read of the secret returns data key `foo`.
+
+**Act 2:** Updates the secret's data to key `lorem`.
+**Assert 2:**
+- Checks a read of the secret returns `lorem` and no longer contains `foo`.
+
+**Act 3:** Deletes the secret.
+**Assert 3:**
+- Checks a read of the secret now returns 404.
+
+### `list_test.go` Summary
+
+Verifies that listing secrets through Steve on the local cluster filters, sorts, pages, summarizes and scopes results correctly for users with different access. Test cases come from `list_cases_test.go` (a pure fixture file of 139 table-driven cases, including a `sqlOnlyListTests` subset for features only Steve's SQL cache supports: summaries and filtering/sorting on `metadata.fields`).
+
+#### `TestList`
+**Arrange:**
+- Suite setup creates 2 projects and 9 namespaces: 5 namespaces in the first project with 5 secrets each (`test1`–`test5`), 2 in the second project and 2 outside any project with 2 secrets each.
+- Labels `test2` as `test-label=2` and `test3`–`test5` as `test-label-gte=3`; gives the first 3 secrets in the first namespace 15, 23 and 7 data keys; annotates `test4` in the second namespace with `management.cattle.io/project-scoped-secret-copy`.
+- Creates 5 users: user-a (project-owner of the first project), user-b (get/list secrets in one namespace), user-c (get/list only `test1` and `test2` in 3 namespaces), user-d (project-owner of both projects, plus get/list in both non-project namespaces), and user-e (cluster-owner).
+
+**Act:** Runs 139 table-driven list requests against Steve's secrets endpoint, each as one of the 5 users, either cluster-wide or scoped to one namespace, and records each response as a request/response example under `testdata/`.
 
 **Assert:**
-- Checks the created secret can be read back with its original data.
-- Checks the updated secret's data reflects the new value on re-read.
-- Checks the secret is gone and reading it after deletion returns an error, for both the global and namespaced endpoint variants.
+- Checks each user receives exactly the secrets their bindings grant, in the expected order, from only the namespaces/secrets they can see (for the cluster-owner, checks expected secrets are included or excluded as the case specifies).
+- Checks label, name, namespace, annotation and `metadata.fields` filters (`=`, `!=`, `~`, `>`, OR within a filter, AND across filters) and `projectsornamespaces`/`projectsornamespaces!=` scoping narrow or exclude results correctly.
+- Checks sorting by name, namespace and data-key count works ascending and descending.
+- Checks `pagesize` returns the expected first page, and `page=2` with the previous response's revision returns the next page.
+- Checks `summary` on name, namespace and state returns the expected per-value counts.
 
 ## tokens/
 
 ### `tokens_test.go` Summary
 
-Verifies that authentication tokens are properly managed, including current token tracking, TTL enforcement, and security measures.
+Verifies Rancher's handling of authentication tokens: identifying the current token, enforcing configured TTLs on created and login-issued tokens, and rejecting cross-origin websocket-upgrade requests.
 
 #### `TestCurrentToken`
-**Act:** Lists all tokens via the management API.
+**Arrange:**
+- Creates a standard user and authenticates as them, since the config's admin token may be a derived API key, which Rancher never marks as current.
+
+**Act:** Lists all of the user's tokens via the management API.
 
 **Assert:**
-- Checks exactly 1 token is marked as current in the token list.
-- Checks the current token's userId matches the admin user.
+- Checks exactly one token in the list is marked current.
+- Checks that token's ID matches the name parsed from the client's own bearer token.
+- Checks that token's UserID matches the created user.
 
 #### `TestWebsocket`
 **Arrange:**
-- Builds a GET request to a protected endpoint (`/v3/clusters`) with websocket-upgrade headers (`Connection: upgrade`, `Upgrade: websocket`).
+- Confirms a GET to `/v3/clusters` without websocket headers succeeds (200), establishing that the headers below are what causes the rejection.
 
-**Act:** Sends the request.
+**Act:** Sends a GET to `/v3/clusters` with websocket-upgrade headers (`Connection: upgrade`, `Upgrade: websocket`) and a foreign `Origin`.
 
 **Assert:**
 - Checks the request is rejected with 403 Forbidden.
@@ -1516,62 +1499,74 @@ Verifies that authentication tokens are properly managed, including current toke
 **Arrange:**
 - Reads the configured max TTL from the `auth-token-max-ttl-minutes` setting.
 
-**Act:** Creates a token with `ttl=0` (unlimited).
+**Act:** Creates a token with `TTLMillis=0`.
 
 **Assert:**
 - Checks the created token's TTL (converted from milliseconds to minutes) equals the configured max TTL.
 
 #### `TestKubeconfigTokenTTL`
 **Arrange:**
-- Deletes any existing kubeconfig token for the admin user.
-- Saves the original `kubeconfig-generate-token` and `kubeconfig-default-token-ttl-minutes` settings for restoration afterward.
-- Sets `kubeconfig-generate-token` to `false` and `kubeconfig-default-token-ttl-minutes` to `0.01` minutes (~600ms).
+- Creates a standard user so the test doesn't depend on the config having an admin password.
+- Sets the `kubeconfig-default-token-ttl-minutes` setting to `0.1` (6 seconds), restoring the original value afterward.
 
-**Act:** Logs in via the `/v3-public` and `/v1-public` login endpoints, waiting for the previous token to expire before each subsequent login.
+**Act:** Logs in as the user with `responseType=kubeconfig`, once through the public `/v3-public/localProviders/local?action=login` endpoint and once through `/v1-public/login`.
 
 **Assert:**
-- Checks the `/v3-public` login response contains `token`, `expiresAt`, and `id` fields, with the token longer than the id and response type/baseType `"token"`.
-- Checks tokens expire within the configured TTL window, confirmed by polling until the bearer token is rejected with 401.
-- Checks a new `/v3-public` login after expiry issues a token different from the previous one.
-- Checks the `/v1-public` login also returns `token` and `expiresAt` fields, both before and after expiry.
+- For each endpoint, checks the login response's `token` is `<id>:<secret>` form, with non-empty `expiresAt` and `type`/`baseType` both `"token"`.
+- Checks the created Token object's `TTLMillis` is 6000, matching the configured setting.
+- Checks the new token authenticates successfully (200) immediately after login.
+- Checks the same token is rejected (401) once its TTL has elapsed, confirmed by polling for up to 30s.
 
 ## users/
 
 ### `users_test.go` Summary
 
-Verifies that user account security constraints are enforced for self-modification and password policies.
+Verifies that the v3 users API enforces self-modification protections and password rules: a user with permission to delete or deactivate other users still can't delete or deactivate itself, usernames can't double as passwords, and passwords must meet the configured minimum length.
 
 #### `TestUserCantDeleteSelf`
 **Arrange:**
-- Retrieves the current admin user (the one the client is authenticated as).
+- Creates a throwaway user with the `users-manage` global role.
+- Creates a second throwaway user with no roles.
+- Logs in as the `users-manage` user and confirms it can delete the other user, proving the role is in effect before testing the self-delete rule.
 
-**Act:** Attempts to delete that user.
+**Act:** The `users-manage` user attempts to delete itself.
 
 **Assert:**
 - Checks the deletion is rejected with 422 Unprocessable Entity.
+- Checks the error message states the user cannot delete themselves.
 
 #### `TestUserCantDeactivateSelf`
 **Arrange:**
-- Retrieves the current admin user (the one the client is authenticated as).
+- Creates a throwaway user with the `users-manage` global role.
+- Creates a second throwaway user with no roles.
+- Logs in as the `users-manage` user and confirms it can set the other user's `enabled` field to `false`, proving the role is in effect before testing the self-deactivate rule.
 
-**Act:** Attempts to update that user with `enabled=false`.
+**Act:** The `users-manage` user attempts to update itself with `enabled=false`.
 
 **Assert:**
 - Checks the update is rejected with 422 Unprocessable Entity.
+- Checks the error message states the user cannot deactivate themselves.
 
 #### `TestUserCantUseUsernameAsPassword`
-**Act:** Attempts to create a user with username "administrator" and password "administrator".
+**Act:** Attempts to create a user whose password is set to the same value as its username.
 
 **Assert:**
 - Checks the creation is rejected with 422 Unprocessable Entity.
+- Checks the error message states the password cannot be the same as the username.
 
 #### `TestPasswordTooShort`
-**Act:** Attempts to create a user with an 8-character password ("tooshort").
+**Arrange:**
+- Reads the configured `password-min-length` setting.
 
-**Assert:**
+**Act 1:** Creates a user with a password whose length exactly equals the minimum.
+**Assert 1:**
+- Checks the creation succeeds.
+
+**Act 2:** Creates a user with a password one character shorter than the minimum.
+**Assert 2:**
 - Checks the creation is rejected with 422 Unprocessable Entity.
+- Checks the error message states the password must be at least the minimum number of characters.
 </content>
-</invoke>
 
 ## workloads/
 
@@ -1598,7 +1593,7 @@ Verifies the dnsRecord Norman API, covering the exposed schema's CRUD permission
 **Assert:**
 - Checks the record is created with `baseType`/`type` "dnsRecord" and hostname "target".
 - Checks the hostname can be updated to "target2" and the change persists through GET and reload.
-- Checks the record appears in the list, can be fetched by ID, and can be deleted.
+- Checks the record's ID appears in the project's dnsRecord list, and that it returns 404 after being deleted.
 
 #### `TestDNSIPs`
 **Arrange:**
@@ -1609,8 +1604,22 @@ Verifies the dnsRecord Norman API, covering the exposed schema's CRUD permission
 **Assert:**
 - Checks the record is created with `ipAddresses` containing both IPs.
 - Checks the IPs can be updated to different values and the change persists through reload.
-- Checks creating a dnsRecord with a loopback IP (127.0.0.2) in the default namespace is rejected with HTTP 422.
-- Checks the original record still appears in the list after the rejected attempt.
+- Checks creating a dnsRecord with a loopback IP (127.0.0.2) in the same namespace is rejected with HTTP 422.
+- Checks the original record still appears in the list after the rejected attempt, and that it returns 404 after being deleted.
+
+### `hpa_test.go` Summary
+
+Verifies that a HorizontalPodAutoscaler with every metric type can be created through the Norman project API on the local cluster.
+
+#### `TestHPA`
+**Arrange:**
+- Creates a project, a namespace, and an nginx workload requesting 100m CPU.
+
+**Act:** Creates an HPA for the workload with maxReplicas 10 and four metrics: Resource (cpu, 50% utilization), Pods (average value 50), External (value 50), and Object (an Ingress, value 50).
+
+**Assert:**
+- Checks the HPA is the only one listed in the namespace.
+- Checks its state is "initializing".
 
 ### `ingress_test.go` Summary
 
@@ -1623,8 +1632,8 @@ Verifies the Norman API for ingress resources, covering the exposed schemas' fie
 **Act:** Retrieves the Norman schemas for the ingress, ingressBackend, ingressRule, and httpIngressPath types.
 
 **Assert:**
-- Checks the ingress schema supports full CRUD, with `namespaceId`/`projectId` create-only, `rules`/`tls`/`ingressClassName`/`backend`/`defaultBackend` create+update, and `publicEndpoints`/`status` read-only.
-- Checks ingressBackend, ingressRule, and httpIngressPath each expose their fields as create+update.
+- Checks the ingress schema supports collection GET/POST and resource GET/PUT/DELETE, with `namespaceId`/`projectId` create-only, `rules`/`tls`/`ingressClassName`/`backend`/`defaultBackend` create+update, and `publicEndpoints`/`status` read-only.
+- Checks the embedded types ingressBackend, ingressRule, and httpIngressPath have no collection/resource API methods of their own, and each expose their fields (e.g. `serviceId`, `targetPort`, `host`, `paths`, `pathType`) as create+update.
 
 #### `TestIngress`
 **Arrange:**
@@ -1734,9 +1743,9 @@ Verifies project-scoped secret resources in the Norman API, covering create/upda
 **Act:** Creates a project-scoped certificate with certificate and key PEM data.
 
 **Assert:**
-- Checks the certificate is created with `type` "certificate" and `expiresAt` set to a valid date.
-- Checks the certificate appears in the list and can be fetched by ID.
-- Checks it can be deleted.
+- Checks the certificate is created with `baseType` "secret", `type` "certificate", and `expiresAt` set to the certificate's expiry date.
+- Checks the certificate appears in the project's certificate list.
+- Checks it returns 404 after being deleted.
 
 #### `TestDockerCredential`
 **Arrange:**
@@ -1791,11 +1800,11 @@ Verifies project-scoped secret resources in the Norman API, covering create/upda
 **Act:** Creates a TLS secret with a malformed certificate directly via the Kubernetes API.
 
 **Assert:**
-- Checks the malformed secret can still be retrieved as a namespacedCertificate through the project API, returning a non-empty response.
+- Checks the malformed secret can still be retrieved as a namespacedCertificate through the project API, with matching `id` and `name`.
 
 ### `workload_test.go` Summary
 
-Verifies the Norman API for workloads and related resources, covering workload creation via Kubernetes and Norman APIs, port-kind handling, private-registry image-pull selection, probe/scheduler persistence, subPath validation, the redeploy and rollback actions, and HorizontalPodAutoscaler creation.
+Verifies the Norman API for workloads and related resources, covering workload creation via Kubernetes and Norman APIs, port-kind handling, private-registry image-pull selection, probe/scheduler persistence, subPath validation, and the redeploy and rollback actions.
 
 #### `TestDeploymentCreationKubectl`
 **Arrange:**
@@ -1845,7 +1854,7 @@ Verifies the Norman API for workloads and related resources, covering workload c
 
 **Act 3:** Updates the workload again to remove the port.
 **Assert 3:**
-- Checks the service's cluster IP is cleared back to empty/nil.
+- Checks the service's cluster IP is cleared back to empty.
 
 #### `TestWorkloadProbes`
 **Arrange:**
@@ -1869,16 +1878,14 @@ Verifies the Norman API for workloads and related resources, covering workload c
 
 #### `TestStatefulSetWorkloadVolumeMountSubpath`
 **Arrange:**
-- Creates a project.
-- Defines a shared StatefulSet config and persistentVolumeClaim volume used for every create/update attempt.
+- Creates a project and a namespace.
+- Creates a valid StatefulSet workload (1 replica, a persistentVolumeClaim volume, and a volumeMount with relative subPath "mysql"), which is reused as the target for the update attempts below.
 
-**Act:** Creates and updates a StatefulSet workload using a volumeMount subPath.
+**Act:** Attempts to create and update StatefulSet workloads using an invalid volumeMount subPath, once absolute ("/mysql") and once containing ".." ("../mysql").
 
 **Assert:**
-- Checks creation with an absolute subPath ("/mysql") is rejected with HTTP 422.
-- Checks creation with a subPath containing ".." ("../mysql") is rejected with HTTP 422.
-- Checks creation with a valid relative subPath ("mysql") succeeds.
-- Checks updating the created workload with either invalid subPath is also rejected with HTTP 422.
+- Checks each invalid create is rejected with HTTP 422, with a message of "must be a relative path" for the absolute path and "must not contain '..'" for the ".." path.
+- Checks updating the existing workload with either invalid subPath is also rejected with HTTP 422 and the same respective message.
 
 #### `TestWorkloadRedeploy`
 **Arrange:**
@@ -1888,7 +1895,6 @@ Verifies the Norman API for workloads and related resources, covering workload c
 **Act:** Triggers the redeploy action on the workload.
 
 **Assert:**
-- Checks the redeploy action returns a 2xx status.
 - Checks the workload gains a `cattle.io/timestamp` annotation after redeploy.
 
 #### `TestWorkloadActionReadOnly`
@@ -1903,15 +1909,4 @@ Verifies the Norman API for workloads and related resources, covering workload c
 **Assert:**
 - Checks the read-only user receives HTTP 404.
 - Checks the project-member user succeeds with a 2xx status.
-
-#### `TestHPA`
-**Arrange:**
-- Creates a project and a namespace.
-- Creates a workload with a CPU resource request.
-
-**Act:** Creates a HorizontalPodAutoscaler referencing the workload with maxReplicas 10 and 4 metric types (Resource-cpu at 50% utilization, Pods averageValue 50, External value 50, Object value 50).
-
-**Assert:**
-- Checks the HPA is created successfully with all 4 metrics.
-- Checks exactly one HPA appears in the list, with state "initializing".
 

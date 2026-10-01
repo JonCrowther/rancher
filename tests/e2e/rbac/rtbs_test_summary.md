@@ -5,7 +5,7 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 ## `TestPRTBRoleTemplateInheritance`
 **Arrange:**
 - Creates a user with the "user" global role.
-- Creates a namespace in the suite's shared project (created in `SetupSuite` on the local cluster).
+- Creates a namespace in the suite's shared project (local cluster).
 - Creates a secret in that namespace.
 - Confirms the user cannot get the secret before any binding exists.
 - Creates RoleB (project-scoped) with a rule granting "get" on that specific secret.
@@ -15,14 +15,17 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert 1:**
 - Checks the user can get the secret (permission inherited from RoleB through RoleA).
 
-**Act 2:** Deletes the PRTB, then creates RoleC that inherits RoleA (chain: RoleC → RoleA → RoleB) and binds the user to RoleC via a new PRTB.
+**Act 2:** Deletes the PRTB.
 **Assert 2:**
-- Checks the user's secret access is revoked once the first PRTB is deleted.
-- Checks the user regains access to the secret via the chained inheritance.
-- Checks the user cannot access a second, newly created secret not covered by any rule.
+- Checks the user's access to the secret is revoked.
 
-**Act 3:** Updates RoleB's rules to add "get" access to the second secret.
+**Act 3:** Creates RoleC, which inherits RoleA (chain RoleC → RoleA → RoleB), and binds the user to RoleC via a new PRTB.
 **Assert 3:**
+- Checks the user regains access to the secret via the chained inheritance.
+- Checks the user is forbidden on a second, newly created secret not covered by any rule.
+
+**Act 4:** Updates RoleB's rules to add "get" access to the second secret.
+**Assert 4:**
 - Checks the user gains access to the second secret too, without any new binding (the change propagates through the inheritance chain).
 
 ## `TestCRTBRoleTemplateInheritance`
@@ -37,14 +40,30 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert 1:**
 - Checks the user can get the namespace (permission inherited from RoleB through RoleA).
 
-**Act 2:** Deletes the CRTB, waits for the namespace access to be revoked, then creates RoleC that inherits RoleA (chain: RoleC → RoleA → RoleB), binds the user to RoleC via a new CRTB, and creates a second namespace.
+**Act 2:** Deletes the CRTB.
 **Assert 2:**
-- Checks the user regains access to the first namespace via the chained inheritance.
-- Checks the user cannot access the second, newly created namespace.
+- Checks the user's namespace access is revoked.
 
-**Act 3:** Updates RoleB's rules to add "get" access to the second namespace.
+**Act 3:** Creates RoleC, which inherits RoleA (chain RoleC → RoleA → RoleB), and binds the user to RoleC via a new CRTB.
 **Assert 3:**
+- Checks the user regains access to the first namespace via the chained inheritance.
+- Checks the user is forbidden on a second, newly created namespace not covered by any rule.
+
+**Act 4:** Updates RoleB's rules to add "get" access to the second namespace.
+**Assert 4:**
 - Checks the user gains access to the second namespace too, while retaining access to the first.
+
+## `TestAPIGroupInRoleTemplate`
+**Arrange:**
+- Skips the test if the admin cannot see any nodes in the local cluster.
+- Creates a standard user with the "user" global role; confirms the user cannot see any nodes yet.
+- Creates a cluster-scoped RoleTemplate with rules granting get/list/watch on "nodes"/"nodepools" (management.cattle.io) and full access ("*") on "scheduling.k8s.io", and waits for it to become available.
+
+**Act:** Binds the user to the RoleTemplate via a CRTB on the local cluster.
+
+**Assert:**
+- Checks the user eventually can list nodes.
+- Checks the user cannot delete a node (the role only grants get/list/watch).
 
 ## `TestRemovingPRTBRevokesNamespaceAccess`
 **Arrange:**
@@ -59,18 +78,6 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 - Checks the user loses access to the second project's namespace.
 - Checks the user retains access to the first project's namespace.
 
-## `TestAPIGroupInRoleTemplate`
-**Arrange:**
-- Skips the test if the admin cannot see any nodes in the local cluster.
-- Creates a standard user with the "user" global role; confirms the user cannot see any nodes yet.
-- Creates a cluster-scoped RoleTemplate with rules granting get/list/watch on "nodes"/"nodepools" (management.cattle.io) and full access ("*") on "scheduling.k8s.io", and waits for it to become available.
-
-**Act:** Binds the user to the RoleTemplate via a CRTB on the local cluster.
-
-**Assert:**
-- Checks the user eventually can list nodes.
-- Checks the user cannot delete a node (the role only grants get/list/watch).
-
 ## `TestDeletingPRTBRemovesClusterAccess`
 **Arrange:**
 - Creates a user.
@@ -83,19 +90,6 @@ Verifies role template binding behavior, including inheritance chains, immutabil
 **Assert:**
 - Checks the membership ClusterRoleBinding is deleted.
 - Checks the user loses cluster access entirely (no clusters listed, and a 403 when fetching the local cluster by ID).
-
-## `TestDeletingPRTBCleansUpLegacyMembershipLabels`
-**Arrange:**
-- Creates a user.
-- Admin creates a PRTB granting the user "project-member" on the suite's shared project (local cluster).
-- Confirms the user can see the local cluster.
-- Confirms a membership ClusterRoleBinding exists, labeled with a key derived from the PRTB's ID.
-
-**Act:** Deletes the PRTB.
-
-**Assert:**
-- Checks the membership ClusterRoleBinding is removed.
-- Checks the user loses cluster access.
 
 ## `TestCRTBCannotTargetUsersAndGroup`
 **Arrange:**

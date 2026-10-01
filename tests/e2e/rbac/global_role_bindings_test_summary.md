@@ -1,20 +1,42 @@
 # `global_role_bindings_test.go` Summary
 
-Verifies validation and immutability rules on global role bindings.
+Verifies validation and immutability rules on GlobalRoleBindings' role and subject fields.
 
 ## `TestGRBCannotUpdateGlobalRoleID`
-Creates a GlobalRoleBinding with globalRoleId "nodedrivers-manage" and attempts to change it to "settings-manage".
-- Checks the globalRoleId remains "nodedrivers-manage" after update.
+**Arrange:**
+- Creates a user.
+- Creates a GlobalRoleBinding binding the user to GlobalRole "nodedrivers-manage".
+
+**Act:** Attempts to update the GlobalRoleBinding's `globalRoleId` to "settings-manage".
+
+**Assert:**
+- Checks `globalRoleId` remains "nodedrivers-manage" after the update.
 
 ## `TestGRBGlobalRoleMustExist`
-Attempts to create a GlobalRoleBinding referencing a non-existent global role "somefakerole".
-- Checks the request fails with 404 Not Found.
+**Arrange:**
+- Creates a user.
+
+**Act:** Attempts to create a GlobalRoleBinding referencing a non-existent GlobalRole ("somefakerole").
+
+**Assert:**
+- Checks the creation fails with 404 Not Found.
 
 ## `TestGRBCannotUpdateSubject`
-Creates a GlobalRoleBinding with user1 and attempts to change both userId and groupPrincipalId.
-- Checks userId remains unchanged when attempting update to user2.
-- Checks groupPrincipalId stays empty when attempting to set it.
+**Arrange:**
+- Creates two users (user1, user2).
+- Creates a GlobalRoleBinding binding user1 to GlobalRole "nodedrivers-manage".
+
+**Act:** Attempts to update the GlobalRoleBinding's `userId` and `groupPrincipalId` fields.
+
+**Assert:**
+- Checks `userId` remains user1's ID after attempting to change it to user2's ID.
+- Checks `userId` still remains user1's ID, and `groupPrincipalId` stays empty, after attempting to set `groupPrincipalId`.
 
 ## `TestGRBTargetsUserOrGroup`
-Attempts to create GlobalRoleBindings with invalid subject combinations: both userId and groupPrincipalId, and neither.
-- Checks both requests fail with 422 Unprocessable Entity.
+**Arrange:**
+- Creates a user.
+
+**Act:** Attempts to create GlobalRoleBindings with both `userId` and `groupPrincipalId` set, and with neither set.
+
+**Assert:**
+- Checks both attempts fail with 422 Unprocessable Entity.

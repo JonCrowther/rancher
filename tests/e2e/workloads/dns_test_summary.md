@@ -21,7 +21,7 @@ Verifies the dnsRecord Norman API, covering the exposed schema's CRUD permission
 **Assert:**
 - Checks the record is created with `baseType`/`type` "dnsRecord" and hostname "target".
 - Checks the hostname can be updated to "target2" and the change persists through GET and reload.
-- Checks the record appears in the list, can be fetched by ID, and can be deleted.
+- Checks the record's ID appears in the project's dnsRecord list, and that it returns 404 after being deleted.
 
 ## `TestDNSIPs`
 **Arrange:**
@@ -32,5 +32,5 @@ Verifies the dnsRecord Norman API, covering the exposed schema's CRUD permission
 **Assert:**
 - Checks the record is created with `ipAddresses` containing both IPs.
 - Checks the IPs can be updated to different values and the change persists through reload.
-- Checks creating a dnsRecord with a loopback IP (127.0.0.2) in the default namespace is rejected with HTTP 422.
-- Checks the original record still appears in the list after the rejected attempt.
+- Checks creating a dnsRecord with a loopback IP (127.0.0.2) in the same namespace is rejected with HTTP 422.
+- Checks the original record still appears in the list after the rejected attempt, and that it returns 404 after being deleted.

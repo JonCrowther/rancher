@@ -1,34 +1,69 @@
 # `rancher_managed_charts_test.go` Summary
 
-Verifies that giving the local cluster an AKS config makes Rancher install and keep upgrading the managed `rancher-aks-operator` chart from the `rancher-charts` repo, without values, without retrying failed installs repeatedly, and that Rancher serves chart icons from a prebuilt repo (with the managed-charts operation timeout set to 50s and the feature-chart refresh set to 21600s for the whole file).
+Verifies that giving the local cluster an AKS config makes Rancher install and keep auto-upgrading the managed `rancher-aks-operator` chart from the `rancher-charts` repo without user-supplied values, without retrying failed installs/upgrades repeatedly, and that Rancher serves chart icons from a prebuilt repo (with the suite setting `system-managed-charts-operation-timeout` to 50s and `system-feature-chart-refresh-seconds` to 21600 for the whole file, and resetting the local cluster's AKS config, the `rancher-charts` repo, and the AKS operator releases after each test).
 
 ## `TestInstallChartLatestVersion`
-Points the `rancher-charts` ClusterRepo at `rancher/charts-small-fork` branch `aks-integration-test-working-charts`, then gives the local cluster an empty AKS config.
+**Arrange:**
+- Points the `rancher-charts` ClusterRepo at `rancher/charts-small-fork` branch `aks-integration-test-working-charts` and waits for it to download.
+
+**Act:** Gives the local cluster an empty AKS config.
+
+**Assert:**
 - Checks `rancher-aks-operator` is deployed in `cattle-system` at version 104.0.2+up1.9.0.
-- Checks that version is the latest `rancher-aks-operator` in `rancher-charts`.
+- Checks that version matches the latest `rancher-aks-operator` version in `rancher-charts`.
 - Checks the app has no user values and no chart values.
 
 ## `TestUpgradeChartToLatestVersion`
-Points `rancher-charts` at the `aks-integration-test-working-charts` branch, removes the latest `rancher-aks-operator` version from its index ConfigMap, gives the local cluster an empty AKS config, then restores the index and force-refreshes the repo.
-- Checks `rancher-aks-operator` is first deployed at 104.0.1+up1.9.0, older than the removed latest version.
-- Checks the app has no values after the install.
-- Checks the app is automatically upgraded to the restored latest version and is deployed.
-- Checks the app still has no values after the upgrade.
+**Arrange:**
+- Points `rancher-charts` at branch `aks-integration-test-working-charts` and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the repo's index ConfigMap.
+
+**Act 1:** Gives the local cluster an empty AKS config.
+**Assert 1:**
+- Checks `rancher-aks-operator` is deployed at 104.0.1+up1.9.0, older than the removed version, with no values.
+
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
+**Assert 2:**
+- Checks the app is automatically upgraded to the restored latest version, reaches `deployed`, and still has no values.
 
 ## `TestUpgradeToWorkingVersion`
-With the local cluster starting with no AKS config and `rancher-aks-operator` not installed, points `rancher-charts` at branch `aks-integration-test-1` (whose older version fails to install), removes the latest `rancher-aks-operator` version from the index, gives the local cluster an empty AKS config, then restores the index and force-refreshes the repo.
-- Checks `rancher-aks-operator` reaches `failed` with no values.
-- Checks at most 2 install operations are created for the failed version, so Rancher doesn't keep retrying.
-- Checks the app is automatically upgraded to the restored latest version and is deployed with no values.
+**Arrange:**
+- Starts with the local cluster having no AKS config and `rancher-aks-operator` not installed.
+- Points `rancher-charts` at branch `aks-integration-test-1` (whose current latest version fails to install) and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the index ConfigMap.
+
+**Act 1:** Gives the local cluster an empty AKS config.
+**Assert 1:**
+- Checks `rancher-aks-operator` reaches `failed`, with no values.
+- Checks at most 2 install operations are created for the failing version, so Rancher doesn't keep retrying.
+
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
+**Assert 2:**
+- Checks the app is automatically upgraded to the restored latest version, reaches `deployed`, with no values.
 
 ## `TestUpgradeToBrokenVersion`
-Points `rancher-charts` at branch `aks-integration-test-2` (whose latest version fails to install), removes the latest `rancher-aks-operator` version from the index, gives the local cluster an empty AKS config, then restores the index and force-refreshes the repo.
-- Checks `rancher-aks-operator` is first deployed at 102.0.0+up1.1.0 with no values.
-- Checks the automatic upgrade to the restored latest version creates a new revision that reaches `failed`, still with no values.
+**Arrange:**
+- Points `rancher-charts` at branch `aks-integration-test-2` (whose current latest version later fails to install) and waits for it to download.
+- Removes the newest `rancher-aks-operator` entry from the index ConfigMap.
+
+**Act 1:** Gives the local cluster an empty AKS config.
+**Assert 1:**
+- Checks `rancher-aks-operator` is first deployed at 102.0.0+up1.1.0, with no values.
+
+**Act 2:** Restores the index ConfigMap to its original content and force-refreshes the repo.
+**Assert 2:**
+- Checks the automatic upgrade to the restored (broken) latest version creates a new app revision that reaches `failed`, still with no values.
 - Checks at most 2 operations are created for the failed upgrade, so Rancher doesn't keep retrying.
 
 ## `TestServeIcons`
-Clones `rancher/charts-small-fork` into Rancher's local catalog directory for a ClusterRepo named `rancher-charts-small-fork` so Rancher treats it as a prebuilt repo, creates that ClusterRepo on branch `main`, then changes the `system-catalog` setting from `external` to `bundled`.
+**Arrange:**
+- Clones `rancher/charts-small-fork` into Rancher's local catalog directory under the fixed path for ClusterRepo `rancher-charts-small-fork`, so Rancher treats it as a prebuilt repo.
+- Creates that ClusterRepo on branch `main` and waits for it to download.
+- Changes the `system-catalog` setting from `external` to `bundled`.
+
+**Act:** Fetches the `rancher-compliance` chart icon, which uses a `file://` path, from the prebuilt repo.
+
+**Assert:**
 - Checks the repo downloads and has more than 1 chart.
-- Checks `system-catalog` starts as `external`.
-- Checks the `rancher-compliance` chart icon, which uses a `file://` path, is served with a non-empty body.
+- Checks `system-catalog` started as `external` before the change.
+- Checks the icon is returned with a non-empty body.

@@ -1,84 +1,183 @@
 # `cluster_repo_test.go` Summary
 
-Verifies that HTTP, Git, and OCI ClusterRepos download their chart indexes, pick up spec changes, honor OCI tag filters and enable/disable, handle registry errors and rate limits with the right retries, and can install charts.
+Verifies that HTTP, Git, and OCI ClusterRepos download their chart indexes, pick up spec changes, honor OCI tag filters and enable/disable, handle registry errors and rate limits with the right retries, and can be used to install charts.
 
 ## `TestHTTPRepo`
-Starts a local HTTP Helm repository serving the testdata charts, creates an HTTP ClusterRepo pointing at it, then changes its URL to `https://releases.rancher.com/server-charts/stable`, then deletes it.
-- Checks the local server receives the User-Agent `go/rancher/<server-version-type>/<server-version> (HTTP-based Helm Repository)`.
-- Checks the repo downloads and its status URL is the local server.
-- Checks the URL change triggers a new download, the status URL is the new URL, and the observed generation increases.
-- Checks the repo is gone after the delete.
+**Arrange:**
+- Starts a local HTTP Helm repository serving the testdata charts.
+
+**Act 1:** Creates an HTTP ClusterRepo pointing at the local server.
+**Assert 1:**
+- Checks the local server receives User-Agent `go/rancher/<server-version-type>/<server-version> (HTTP-based Helm Repository)`.
+- Checks the repo downloads and its status URL is the local server's URL.
+
+**Act 2:** Updates the ClusterRepo's URL to `https://releases.rancher.com/server-charts/stable`.
+**Assert 2:**
+- Checks the URL change triggers a new download, the status URL becomes the new URL, and the observed generation increases.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestGitRepo`
-Creates a Git ClusterRepo for `https://github.com/rancher/charts`, then changes it to `https://github.com/rancher/rke2-charts`, then deletes it.
+**Act 1:** Creates a Git ClusterRepo for `https://github.com/rancher/charts`.
+**Assert 1:**
 - Checks the repo downloads and its status URL is `rancher/charts`.
-- Checks the URL change triggers a new download, the status URL is `rancher/rke2-charts`, and the observed generation increases.
-- Checks the repo is gone after the delete.
+
+**Act 2:** Updates the GitRepo URL to `https://github.com/rancher/rke2-charts`.
+**Assert 2:**
+- Checks the URL change triggers a new download, the status URL becomes `rancher/rke2-charts`, and the observed generation increases.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestGitRepoRetries`
-Creates a Git ClusterRepo for `https://github.com/rancher/charts-small-fork` on branch `invalid-branch` with exponential backoff of 30s min wait, 60s max wait and 2 max retries, then changes the branch to `main`.
-- Checks the `RepoDownloaded` condition stays False while the retry count goes 1, then 2, then back to 0 once retries are exhausted.
-- Checks the branch change to `main` triggers a download with a newer download time.
-- Checks the repo is gone after the delete.
+**Act 1:** Creates a Git ClusterRepo for `https://github.com/rancher/charts-small-fork` on branch `invalid-branch`, with exponential backoff of 30s min wait, 60s max wait, and 2 max retries.
+**Assert 1:**
+- Checks the `RepoDownloaded` condition stays False while the retry count climbs from 1 to 2, then resets to 0 once retries are exhausted.
+
+**Act 2:** Updates the branch to `main`.
+**Assert 2:**
+- Checks the branch change triggers a download with a newer download time.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestOCIRepo`
-Starts a local OCI registry, pushes `testingchart` 0.1.0 to `rancher/testingchart`, creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with plain HTTP, then changes its URL to `oci://<registry>/rancher/testingchart:0.1.0`, then deletes it.
-- Checks every registry request has a User-Agent containing `go`, `rancher` and `(OCI-based Helm Repository)`.
+**Arrange:**
+- Starts a local OCI registry and pushes `testingchart` 0.1.0 to `rancher/testingchart`.
+
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with plain HTTP.
+**Assert 1:**
+- Checks every registry request has a User-Agent containing `go`, `rancher`, and `(OCI-based Helm Repository)`.
 - Checks the repo downloads and its status URL is the first URL.
-- Checks the URL change triggers a new download, the status URL is the tagged URL, and the observed generation increases.
-- Checks the repo is gone after the delete.
+
+**Act 2:** Updates the URL to `oci://<registry>/rancher/testingchart:0.1.0`.
+**Assert 2:**
+- Checks the URL change triggers a new download, the status URL becomes the tagged URL, and the observed generation increases.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestOCIRepo2`
-Starts a local OCI registry with `testingchart` 0.1.0, creates an OCI ClusterRepo for the namespace URL `oci://<registry>/rancher`, then changes it to the registry root `oci://<registry>/`, then deletes it.
+**Arrange:**
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed.
+
+**Act 1:** Creates an OCI ClusterRepo for the namespace URL `oci://<registry>/rancher`.
+**Assert 1:**
 - Checks the repo downloads and its status URL is the namespace URL.
-- Checks the URL change triggers a new download, the status URL is the root URL, and the observed generation increases.
-- Checks the repo is gone after the delete.
+
+**Act 2:** Updates the URL to the registry root `oci://<registry>/`.
+**Assert 2:**
+- Checks the URL change triggers a new download, the status URL becomes the root URL, and the observed generation increases.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestOCIRepo3`
-For each of 404, 401 and 403, starts a registry that answers every request with that status and creates an OCI ClusterRepo for `oci://<registry>/rancher`, then deletes it.
+**Act:** For each of HTTP 404, 401, and 403, creates an OCI ClusterRepo against a registry that answers every request with that status code.
+
+**Assert:**
 - Checks the `OCIDownloaded` condition becomes False with the message `error <code>: <status text>` (`Not Found`, `Unauthorized`, `Forbidden`).
 - Checks the repo makes no retries.
 - Checks no index ConfigMap is created.
-- Checks the repo is gone after the delete.
+- Checks the repo is gone after deleting it.
 
 ## `TestOCIRepo4`
-Starts a registry with `testingchart` (tags 0.1.0 and 0.0.1) and `testchart` (tags 1.0.0 and 0.1.1) whose `testchart` 1.0.0 manifest returns 429 for 1 minute after the first request, then creates an OCI ClusterRepo for the registry root with a 65s refresh interval and backoff of 1s min wait, 1s max wait and 1 max retry.
+**Arrange:**
+- Starts a registry with `testingchart` (tags 0.1.0 and 0.0.1) and `testchart` (tags 1.0.0 and 0.1.1), where the `testchart` 1.0.0 manifest returns 429 for 1 minute after the first request.
+
+**Act:** Creates an OCI ClusterRepo for the registry root with a 65s refresh interval and exponential backoff of 1s min wait, 1s max wait, and 1 max retry.
+
+**Assert:**
 - Checks the `OCIDownloaded` condition becomes False with the retry count back at 0.
 - Checks the partial index has 2 charts, with 2 `testingchart` versions that have digests.
 - Checks the next refresh after the rate limit resets sets `OCIDownloaded` True with 0 retries.
 - Checks the full index has 2 versions each of `testchart` and `testingchart`, with digests.
-- Checks the repo is gone after the delete.
+- Checks the repo is gone after deleting it.
 
 ## `TestOCIRepo5`
-Same as `TestOCIRepo4`, but the registry also sends `RateLimit-Remaining: 0;w=60` on HEAD requests for the `testchart` 1.0.0 manifest, and the ClusterRepo uses the default refresh interval.
+**Arrange:**
+- Starts the same registry as `TestOCIRepo4`, except it also sends `RateLimit-Remaining: 0;w=60` on HEAD requests for the `testchart` 1.0.0 manifest.
+
+**Act:** Creates an OCI ClusterRepo for the registry root with the default refresh interval.
+
+**Assert:**
 - Checks the `OCIDownloaded` condition becomes False with the retry count back at 0.
 - Checks the partial index has 2 charts, with 2 `testingchart` versions that have digests.
 - Checks the repo later sets `OCIDownloaded` True with 0 retries.
 - Checks the full index has 2 versions each of `testchart` and `testingchart`, with digests.
-- Checks the repo is gone after the delete.
+- Checks the repo is gone after deleting it.
 
 ## `TestOCIRepoMultipleChartRepos`
-Starts a local OCI registry, pushes `testingchart` 0.1.0 to 300 repositories (`rancher/testingchart-0` through `rancher/testingchart-299`), creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart-0`, then changes it to `oci://<registry>/rancher/testingchart-0:0.1.0`, then deletes it.
+**Arrange:**
+- Starts a local OCI registry and pushes `testingchart` 0.1.0 to 300 repositories (`rancher/testingchart-0` through `rancher/testingchart-299`).
+
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart-0`.
+**Assert 1:**
 - Checks the repo downloads and its status URL is the first URL.
-- Checks the URL change triggers a new download, the status URL is the tagged URL, and the observed generation increases.
-- Checks the repo is gone after the delete.
+
+**Act 2:** Updates the URL to `oci://<registry>/rancher/testingchart-0:0.1.0`.
+**Assert 2:**
+- Checks the URL change triggers a new download, the status URL becomes the tagged URL, and the observed generation increases.
+
+**Act 3:** Deletes the ClusterRepo.
+**Assert 3:**
+- Checks the repo is gone.
 
 ## `TestOCIRepoWithOptions`
-Starts a local OCI registry with `testingchart` 0.1.0 and 1.0.0, creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with tag filter `< 1.0.0`, then enables `DownloadAllTags` while keeping the filter, then removes the filter.
-- Checks the repo downloads and the index only has `testingchart` versions matching `< 1.0.0`.
-- Checks the index still has 1 `testingchart` version after `DownloadAllTags` is enabled with the filter kept.
-- Checks the index has both `testingchart` versions after the filter is removed.
-- Checks the repo is gone after the delete.
+**Arrange:**
+- Starts a local OCI registry with `testingchart` 0.1.0 and 1.0.0 pushed.
+
+**Act 1:** Creates an OCI ClusterRepo for `oci://<registry>/rancher/testingchart` with tag filter `< 1.0.0`.
+**Assert 1:**
+- Checks the repo downloads and the index only has `testingchart` versions matching `< 1.0.0` (1 version).
+
+**Act 2:** Enables `DownloadAllTags` while keeping the tag filter.
+**Assert 2:**
+- Checks the index still has only 1 `testingchart` version.
+
+**Act 3:** Removes the tag filter, leaving `DownloadAllTags` enabled.
+**Assert 3:**
+- Checks the index now has both `testingchart` versions.
+
+**Act 4:** Deletes the ClusterRepo.
+**Assert 4:**
+- Checks the repo is gone.
 
 ## `TestOCIRepoChartInstallation`
-Starts a local OCI registry with `testingchart` 0.1.0, creates an OCI ClusterRepo for `oci://<registry>/rancher`, installs `testingchart` 0.1.0 from it as release `testreleasename` in `default`, then uninstalls it and deletes the repo.
+**Arrange:**
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed, creates an OCI ClusterRepo for `oci://<registry>/rancher`, and waits for it to download.
+
+**Act 1:** Installs `testingchart` 0.1.0 from the repo as release `testreleasename` in `default`.
+**Assert 1:**
 - Checks the app reaches `deployed`.
 - Checks the app has the `catalog.cattle.io/cluster-repo-name` label set to the ClusterRepo's name.
-- Checks the app is deleted after the uninstall.
-- Checks a second delete of the repo fails because it is already gone.
+
+**Act 2:** Uninstalls the chart.
+**Assert 2:**
+- Checks the app is deleted.
+
+**Act 3:** Deletes the ClusterRepo twice.
+**Assert 3:**
+- Checks the second delete fails because the repo is already gone.
 
 ## `TestOCIEnableRepo`
-Starts a local OCI registry with `testingchart` 0.1.0 and creates an OCI ClusterRepo for `oci://<registry>/rancher`, then disables the repo, pushes `testchart` 1.0.0 and force-refreshes it, then enables it and force-refreshes it again.
-- Checks the index still has only 1 chart after the force refresh while disabled.
-- Checks the index has 2 charts after the force refresh once re-enabled.
-- Checks a second delete of the repo fails because it is already gone.
+**Arrange:**
+- Starts a local OCI registry with `testingchart` 0.1.0 pushed, creates an OCI ClusterRepo for `oci://<registry>/rancher`, and waits for it to download.
+
+**Act 1:** Disables the ClusterRepo, pushes `testchart` 1.0.0, then force-refreshes it.
+**Assert 1:**
+- Checks the index still has only 1 chart, since the repo is disabled.
+
+**Act 2:** Enables the ClusterRepo and force-refreshes it again.
+**Assert 2:**
+- Checks the index now has 2 charts.
+
+**Act 3:** Deletes the ClusterRepo twice.
+**Assert 3:**
+- Checks the second delete fails because the repo is already gone.

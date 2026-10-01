@@ -9,8 +9,8 @@ Verifies the Norman API for ingress resources, covering the exposed schemas' fie
 **Act:** Retrieves the Norman schemas for the ingress, ingressBackend, ingressRule, and httpIngressPath types.
 
 **Assert:**
-- Checks the ingress schema supports full CRUD, with `namespaceId`/`projectId` create-only, `rules`/`tls`/`ingressClassName`/`backend`/`defaultBackend` create+update, and `publicEndpoints`/`status` read-only.
-- Checks ingressBackend, ingressRule, and httpIngressPath each expose their fields as create+update.
+- Checks the ingress schema supports collection GET/POST and resource GET/PUT/DELETE, with `namespaceId`/`projectId` create-only, `rules`/`tls`/`ingressClassName`/`backend`/`defaultBackend` create+update, and `publicEndpoints`/`status` read-only.
+- Checks the embedded types ingressBackend, ingressRule, and httpIngressPath have no collection/resource API methods of their own, and each expose their fields (e.g. `serviceId`, `targetPort`, `host`, `paths`, `pathType`) as create+update.
 
 ## `TestIngress`
 **Arrange:**

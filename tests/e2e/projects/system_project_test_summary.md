@@ -1,13 +1,25 @@
 # `system_project_test.go` Summary
 
-Verifies that the local cluster's System project can't be deleted and that the system namespaces' default service accounts don't automount their tokens.
+Verifies that Rancher's local-cluster System project can't be deleted and that the default service
+accounts in system namespaces (other than kube-system) have token automounting disabled.
 
 ## `TestSystemProjectCannotBeDeleted`
-Finds the local cluster's System project and tries to delete it.
+**Arrange:**
+- Finds the local cluster's "System" project.
+
+**Act:** Attempts to delete the System project.
+
+**Assert:**
 - Checks the delete is rejected with 405 Method Not Allowed.
 - Checks the error body contains "System Project cannot be deleted".
 
 ## `TestSystemNamespacesDefaultServiceAccount`
-Reads the `system-namespaces` setting and lists the `default` ServiceAccount in every namespace on the local cluster.
-- Checks the default ServiceAccount in each system namespace except kube-system has automountServiceAccountToken=false.
+**Arrange:**
+- Reads the `system-namespaces` setting to get the list of system namespace names.
+
+**Act:** Lists the `default` ServiceAccount in every namespace on the local cluster.
+
+**Assert:**
+- Checks the default ServiceAccount in each system namespace, except kube-system, has
+  automountServiceAccountToken=false.
 - Checks at least one such ServiceAccount was found.

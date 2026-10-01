@@ -23,7 +23,8 @@ Verifies that settings can be created, read, updated, and deleted according to t
 **Act:** Retrieves the read-only "cacerts" setting by ID.
 
 **Assert:**
-- Checks the setting is retrieved without error.
+- Checks the setting is retrieved without error, with ID "cacerts".
+- Checks the setting has no "update" link.
 
 ## `TestDeleteReadOnly`
 **Arrange:**
@@ -63,7 +64,10 @@ Verifies that settings can be created, read, updated, and deleted according to t
 - Checks the returned setting's value is "b".
 
 ## `TestUpdateNonExisting`
-**Act:** Sends a PUT request to update a setting that does not exist.
+**Arrange:**
+- Creates a setting, and confirms a direct PUT to its ID returns 200 (so the helper request itself is known-good).
+
+**Act:** Sends the same PUT request against a nonexistent setting ID.
 
 **Assert:**
 - Checks the response status is 404 Not Found.
