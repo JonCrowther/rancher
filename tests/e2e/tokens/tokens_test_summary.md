@@ -1,19 +1,23 @@
 # `tokens_test.go` Summary
 
-Verifies that authentication tokens are properly managed, including current token tracking, TTL enforcement, and security measures.
+Verifies Rancher's handling of authentication tokens: identifying the current token, enforcing configured TTLs on created and login-issued tokens, and rejecting cross-origin websocket-upgrade requests.
 
 ## `TestCurrentToken`
-**Act:** Lists all tokens via the management API.
+**Arrange:**
+- Creates a standard user and authenticates as them, since the config's admin token may be a derived API key, which Rancher never marks as current.
+
+**Act:** Lists all of the user's tokens via the management API.
 
 **Assert:**
-- Checks exactly 1 token is marked as current in the token list.
-- Checks the current token's userId matches the admin user.
+- Checks exactly one token in the list is marked current.
+- Checks that token's ID matches the name parsed from the client's own bearer token.
+- Checks that token's UserID matches the created user.
 
 ## `TestWebsocket`
 **Arrange:**
-- Builds a GET request to a protected endpoint (`/v3/clusters`) with websocket-upgrade headers (`Connection: upgrade`, `Upgrade: websocket`).
+- Confirms a GET to `/v3/clusters` without websocket headers succeeds (200), establishing that the headers below are what causes the rejection.
 
-**Act:** Sends the request.
+**Act:** Sends a GET to `/v3/clusters` with websocket-upgrade headers (`Connection: upgrade`, `Upgrade: websocket`) and a foreign `Origin`.
 
 **Assert:**
 - Checks the request is rejected with 403 Forbidden.
@@ -22,21 +26,20 @@ Verifies that authentication tokens are properly managed, including current toke
 **Arrange:**
 - Reads the configured max TTL from the `auth-token-max-ttl-minutes` setting.
 
-**Act:** Creates a token with `ttl=0` (unlimited).
+**Act:** Creates a token with `TTLMillis=0`.
 
 **Assert:**
 - Checks the created token's TTL (converted from milliseconds to minutes) equals the configured max TTL.
 
 ## `TestKubeconfigTokenTTL`
 **Arrange:**
-- Deletes any existing kubeconfig token for the admin user.
-- Saves the original `kubeconfig-generate-token` and `kubeconfig-default-token-ttl-minutes` settings for restoration afterward.
-- Sets `kubeconfig-generate-token` to `false` and `kubeconfig-default-token-ttl-minutes` to `0.01` minutes (~600ms).
+- Creates a standard user so the test doesn't depend on the config having an admin password.
+- Sets the `kubeconfig-default-token-ttl-minutes` setting to `0.1` (6 seconds), restoring the original value afterward.
 
-**Act:** Logs in via the `/v3-public` and `/v1-public` login endpoints, waiting for the previous token to expire before each subsequent login.
+**Act:** Logs in as the user with `responseType=kubeconfig`, once through the public `/v3-public/localProviders/local?action=login` endpoint and once through `/v1-public/login`.
 
 **Assert:**
-- Checks the `/v3-public` login response contains `token`, `expiresAt`, and `id` fields, with the token longer than the id and response type/baseType `"token"`.
-- Checks tokens expire within the configured TTL window, confirmed by polling until the bearer token is rejected with 401.
-- Checks a new `/v3-public` login after expiry issues a token different from the previous one.
-- Checks the `/v1-public` login also returns `token` and `expiresAt` fields, both before and after expiry.
+- For each endpoint, checks the login response's `token` is `<id>:<secret>` form, with non-empty `expiresAt` and `type`/`baseType` both `"token"`.
+- Checks the created Token object's `TTLMillis` is 6000, matching the configured setting.
+- Checks the new token authenticates successfully (200) immediately after login.
+- Checks the same token is rejected (401) once its TTL has elapsed, confirmed by polling for up to 30s.

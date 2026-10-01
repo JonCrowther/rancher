@@ -84,19 +84,22 @@ them.
 ### Suite structure
 
 Each suite lives under `tests/e2e/<package>/` as a `testify/suite.Suite`. One dedicated
-`<name>_suite_test.go` holds everything the suite's tests share; every other file in the directory
-only adds test methods to that same struct — no setup, no shared assertions.
+`<name>_suite_test.go` holds the struct, `SetupSuite`/`TearDownSuite`, the sub-session helper, and
+any helper used by more than one topic file. Every other file in the directory is a topic file: it
+adds test methods to that same struct, plus any helper used only by tests in that file (kept at the
+top of the file, next to its callers — see "Four tiers of code reuse"). No topic file does suite
+setup.
 
 ```go
-type RTBTestSuite struct {
+type RBACTestSuite struct {
 	suite.Suite
-	client              *rancher.Client
-	session             *session.Session
-	project             *management.Project // suite-shared fixture
-	downstreamClusterID string
+	client    *rancher.Client
+	session   *session.Session
+	project   *management.Project // suite-shared fixture
+	clusterID string              // cluster under test; "local" is Rancher's own cluster, not a downstream
 }
 
-func (p *RTBTestSuite) SetupSuite() {
+func (p *RBACTestSuite) SetupSuite() {
 	p.downstreamClusterID = "local"
 	testSession := session.NewSession()
 	p.session = testSession
@@ -107,32 +110,32 @@ func (p *RTBTestSuite) SetupSuite() {
 
 	testProject, err := client.Management.Project.Create(&management.Project{
 		ClusterID: p.downstreamClusterID,
-		Name:      "TestProject",
+		Name:      namegen.AppendRandomString("rbac-suite-"),
 	})
 	p.Require().NoError(err)
 	p.project = testProject
 }
 
-func (p *RTBTestSuite) TearDownSuite() {
-	client, err := p.client.WithSession(p.session)
-	p.Require().NoError(err)
-	p.Require().NoError(client.Management.Project.Delete(p.project))
+func (p *RBACTestSuite) TearDownSuite() {
 	p.session.Cleanup()
 }
 
-func TestRTBTestSuite(t *testing.T) {
-	suite.Run(t, new(RTBTestSuite))
+func TestRBACTestSuite(t *testing.T) {
+	suite.Run(t, new(RBACTestSuite))
 }
 ```
 
 Only resources meant to be shared across *every* test in the suite belong in `SetupSuite`. They're
-the one thing that needs manual deletion, in `TearDownSuite`, because they weren't created through
-a sub-session.
+created through the suite session, so `p.session.Cleanup()` in `TearDownSuite` deletes them — no
+manual delete is needed. Give them randomized names so a leaked fixture from an earlier run can't
+collide. Don't put `Require()` calls ahead of `session.Cleanup()` in `TearDownSuite`: a failure there
+skips the cleanup entirely.
 
 A suite is not always confined to the file that declares its struct: `rbac/` is one suite
-(`RTBTestSuite`, declared in `rtbs_test.go`) with its test methods spread across seven files by
-topic (`default_roles_test.go`, `etcdbackups_test.go`, `features_test.go`, `global_roles_test.go`,
-`impersonation_test.go`, `projects_test.go`, `rtbs_test.go`). Most other directories are simpler —
+(`RBACTestSuite`, declared in `rbac_suite_test.go`) with its test methods spread across topic files
+(`default_roles_test.go`, `etcdbackups_test.go`, `features_test.go`, `global_roles_test.go`,
+`global_role_bindings_test.go`, `impersonation_test.go`, `projects_test.go`,
+`project_quotas_test.go`, `rtbs_test.go`). Most other directories are simpler —
 one file, one suite. Either is valid; check for sibling files adding methods to the same struct
 before assuming a directory's suite is confined to one file.
 
@@ -167,7 +170,7 @@ Every test's first line gets its own sub-session-scoped client, registering that
 with `t.Cleanup` immediately. This is what makes cleanup automatic and makes tests safe to re-run:
 
 ```go
-func (p *RTBTestSuite) newSubSession() *rancher.Client {
+func (p *RBACTestSuite) newSubSession() *rancher.Client {
 	subSession := p.session.NewSession()
 	client, err := p.client.WithSession(subSession)
 	p.Require().NoError(err)
@@ -175,7 +178,7 @@ func (p *RTBTestSuite) newSubSession() *rancher.Client {
 	return client
 }
 
-func (p *RTBTestSuite) TestBackupsManageRole() {
+func (p *RBACTestSuite) TestBackupsManageRole() {
 	client := p.newSubSession()
 	// every resource created through `client` from here on is deleted
 	// automatically when this test ends — no manual cleanup needed.
@@ -186,6 +189,27 @@ func (p *RTBTestSuite) TestBackupsManageRole() {
 A generated test must obtain its client via the suite's sub-session helper before creating
 anything. Creating a resource through the raw suite-level client instead of a sub-session client is
 a leak — never introduce a new instance of this.
+
+The session tracks every direct create — Norman `client.Management.X.Create(...)` and creates
+through the dynamic client from `client.GetDownStreamClusterClient(...)` alike — and its delete
+ignores 404s. So a manual `T().Cleanup` that deletes a directly-created resource is redundant; don't
+add one. `client.AsUser(...)` shares the parent client's session.
+
+### Reporting errors from a manual cleanup
+
+testify swaps the suite's `T` back to the parent test before `t.Cleanup` callbacks run, so inside a
+cleanup `p.Require()`/`p.Assert()` report against the *suite*, not the test that registered the
+cleanup (and `Require` calls `FailNow` on the wrong `T`). Capture the test's `T` first, and use
+`assert` so every restore step still runs after one fails. Never swallow the error with `_ =`: a
+silent failure leaves shared state mutated for every later test.
+
+```go
+t := p.T()
+t.Cleanup(func() {
+	_, err := client.Management.GlobalRole.Update(gr, map[string]any{"newUserDefault": false})
+	assert.NoError(t, err, "failed to revert newUserDefault on global role %s", gr.ID)
+})
+```
 
 ### Indirectly-created resources need explicit cleanup
 
@@ -208,7 +232,10 @@ p.Require().NoError(err)
 
 user, err := client.Management.User.ByID(crtb.UserID) // populated once the controller reacts
 p.Require().NoError(err)
-p.T().Cleanup(func() { _ = client.Management.User.Delete(user) })
+t := p.T()
+t.Cleanup(func() {
+	assert.NoError(t, client.Management.User.Delete(user), "failed to delete user %s", user.ID)
+})
 ```
 
 Recognize this pattern whenever the input describes an action that *causes* something to be
@@ -228,7 +255,7 @@ contaminated by those pre-existing defaults unless they're cleared first and res
 // and registers a cleanup that restores the original flags. This is what makes a later
 // `Require().Len(crtbs.Data, 3)` a true "exactly 3, no more" assertion rather than an
 // undercount-or-overcount depending on whatever else is currently flagged as default.
-func (p *RTBTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs []string) {
+func (p *RBACTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs []string) {
 	roleTemplates, err := client.Management.RoleTemplate.List(nil)
 	p.Require().NoError(err)
 
@@ -252,8 +279,10 @@ func (p *RTBTestSuite) setClusterCreatorDefaults(client *rancher.Client, roleIDs
 		p.Require().NoError(err)
 	}
 
-	p.T().Cleanup(func() {
-		// restore every role template's original flag value here
+	t := p.T()
+	t.Cleanup(func() {
+		// restore every role template's original flag value here, reporting each failure with
+		// assert.NoError(t, ...) — see "Reporting errors from a manual cleanup"
 	})
 }
 ```
@@ -270,7 +299,7 @@ guard on their own setup action**, never to express the behavior the test is act
 
 ```go
 // OK: guards that setup succeeded. Not a behavioral assertion.
-func (p *RTBTestSuite) createUser(client *rancher.Client, prefix, globalRole string) *management.User {
+func (p *RBACTestSuite) createUser(client *rancher.Client, prefix, globalRole string) *management.User {
 	user, err := users.CreateUserWithRole(client, &management.User{...}, globalRole)
 	p.Require().NoError(err) // guard clause on setup — allowed
 	return user
@@ -278,35 +307,77 @@ func (p *RTBTestSuite) createUser(client *rancher.Client, prefix, globalRole str
 ```
 
 ```go
-// NOT a valid pattern to add, even though a version of it exists in rtbs_test.go today:
-func (p *RTBTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
+// NOT a valid pattern (rtbs_test.go had this until the rbac/ audit inlined it):
+func (p *RBACTestSuite) assertClusterAccessRevoked(userClient *rancher.Client) {
 	p.Require().Eventually(func() bool { ... }, ...) // asserts the actual
-	_, err := userClient.Management.Cluster.ByID(p.downstreamClusterID)      // behavior under test —
+	_, err := userClient.Management.Cluster.ByID(p.clusterID)                // behavior under test —
 	p.Require().Error(err)                                                  // must be inline instead.
 }
+```
+
+When a check needs polling, the helper should be a non-asserting getter that returns the observed
+value and an error, and the test writes its own `Eventually` around it. The pass condition then
+stays visible in the test (e.g. `resourceQuotaHard` and `projectUsedLimit` in
+`rbac/project_quotas_test.go`):
+
+```go
+p.Require().Eventually(func() bool {
+	used, err := p.projectUsedLimit(client, project.ID, "pods")
+	return err == nil && used == "4"
+}, 2*time.Minute, 2*time.Second, "waiting for project usedLimit.pods=4")
 ```
 
 If two tests need an identical, lengthy check, it gets duplicated inline in both. That's an accepted
 DRY violation, not an oversight.
 
-### Three tiers of code reuse
+### Negative checks need a positive precondition and a specific error
+
+A "user cannot do X" check passes trivially if the user's binding simply hasn't propagated yet, or
+if the call failed for an unrelated reason. So:
+
+- Before asserting a denial, wait for something the same binding *does* grant
+  (`extauthz.WaitForAllowed`), which proves the binding is in effect. For example, `read-only`
+  grants listing pods, `cluster-member` grants listing nodes, and the global `user` role grants
+  creating secrets in `cattle-global-data`.
+- Assert the specific failure, not just `Error(err)`: `apierrors.IsForbidden(err)` for k8s API
+  errors, or `errors.As(err, &apiErr)` plus `apiErr.StatusCode` for Norman errors.
+- Poll a denial with `EventuallyWithT` and an `assert.Truef(c, …, "got: %v", err)`, so a
+  timeout reports the last error rather than "Condition never satisfied".
+- When a regression would make the forbidden action actually happen, prove the denial with an
+  access review (`checkAccessAllowed`) instead of attempting it (don't really delete a node from
+  the shared cluster). Likewise, point negative-path creates at low-privilege roles
+  (e.g. `kontainerdrivers-manage`, not `admin`), so an unexpected success doesn't escalate anyone.
+
+### Four tiers of code reuse
+
+Keep a helper as close to its callers as possible — the goal is that a reader can understand a test
+without jumping between files.
 
 1. **Inline** — a one-off action, written directly in the test.
 2. **Test-local closure** — defined *inside* one test function, for repetition local to that test
    only (e.g. a helper closure used twice within a single test and nowhere else).
-3. **Suite-level helper** — setup/action (never assertion) shared across multiple tests in the
-   suite (e.g. `createUser`, `createNamespace`), defined in the suite's setup file.
+3. **File-local helper** — setup/action (never assertion) shared by several tests *in the same topic
+   file* and nowhere else (e.g. `setClusterCreatorDefaults` in `rbac/default_roles_test.go`,
+   `resourceQuotaHard` in `rbac/project_quotas_test.go`). Defined at the top of that topic file,
+   not in the suite file.
+4. **Suite-level helper** — setup/action (never assertion) shared across tests in *more than one*
+   topic file (e.g. `createUser`, `createNamespace`), defined in the suite's `_suite_test.go` file.
 
-Before writing a new suite-level helper, check whether an equivalent already exists under
+Promote a helper up a tier only when a caller outside its current scope appears — e.g. a file-local
+helper moves to the suite file once a second topic file needs it.
+
+Before writing a new file-local or suite-level helper, check whether an equivalent already exists under
 `tests/e2e/actions/` (e.g. `tests/e2e/actions/kubeapi/namespaces`, `.../kubeapi/rbac`,
 `.../kubeapi/secrets`) — reuse it rather than duplicating it at the suite level.
 
 ### Current known gaps (do not fix as part of this skill)
 
-`rtbs_test.go` — the reference file above — doesn't fully match this policy today: it mixes its own
-nine tests into the suite's setup file, and it still has the `assertClusterAccessRevoked` helper
-shown above as a counter-example. Both are tracked for a later, separate audit pass. Adding a new
-test does not require or invite fixing either — leave them as-is.
+Directories not yet through the audit may still contain patterns this skill forbids (assertion
+helpers, `_ =` cleanups, bare `Error(err)` negative checks). `rbac/` has been audited. Adding a new
+test does not require or invite fixing existing code elsewhere — leave it as-is. Known open items
+in `rbac/`: the kontainer-driver count of 3 in `TestKontainerDriverVisibilityByGlobalRole` assumes
+a default install, and `TestDefaultSystemProjectRole` has a loop that passes vacuously (marked
+TODO).
 
 ## Workflow
 
@@ -376,13 +447,16 @@ enough that two engineers would reasonably write different code from it (e.g. th
 
 ### Step 5 — Identify reusable code
 
-- Read the target suite's setup file for what already exists (the sub-session helper, shared
-  fixtures, suite-level helpers like `createUser`) and reuse it.
+- Read the target suite's `_suite_test.go` file for what already exists (the sub-session helper,
+  shared fixtures, suite-level helpers like `createUser`) and the target topic file for file-local
+  helpers, and reuse them.
 - Check `tests/e2e/actions/` for existing helpers covering the resource types involved before
   writing anything new.
-- Only add a new suite-level helper if nothing existing (suite-level or in `actions/`) covers a
-  repeated setup need — call this out explicitly, since it's the one case where adding "one test"
-  still touches the shared setup file.
+- Only add a new helper if nothing existing (file-local, suite-level, or in `actions/`) covers a
+  repeated setup need, and place it at the lowest tier that covers its callers (see "Four tiers of
+  code reuse"). Call this out explicitly — and if reusing an existing file-local helper from a
+  different topic file means promoting it to the suite file, say so, since that's the one case where
+  adding "one test" touches the shared suite file.
 
 ### Step 6 — Generate
 

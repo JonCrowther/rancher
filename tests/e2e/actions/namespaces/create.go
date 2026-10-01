@@ -12,6 +12,7 @@ import (
 	v1 "github.com/rancher/shepherd/clients/rancher/v1"
 	"github.com/rancher/shepherd/extensions/defaults"
 	"github.com/rancher/shepherd/pkg/api/scheme"
+	"github.com/rancher/shepherd/pkg/session"
 	"github.com/rancher/shepherd/pkg/wait"
 
 	coreV1 "k8s.io/api/core/v1"
@@ -51,6 +52,11 @@ func CreateNamespace(client *rancher.Client, namespaceName, containerDefaultReso
 	if err != nil {
 		return nil, err
 	}
+	// Steve's Create registers a delete with the session that checks the schemas loaded now. A new
+	// project member has no delete access to any namespace until this one exists, so that delete
+	// would always fail. Create through a session that is never cleaned up; the delete registered
+	// below replaces it.
+	steveClient.Ops.Session = session.NewSession()
 
 	nameSpaceClient := steveClient.SteveType(NamespaceSteveType)
 

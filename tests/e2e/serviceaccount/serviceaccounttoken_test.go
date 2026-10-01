@@ -1,99 +1,70 @@
-package integration
+package serviceaccount
 
 import (
 	"context"
 	"sync"
-	"testing"
-	"time"
 
 	"github.com/rancher/rancher/pkg/serviceaccounttoken"
-	"github.com/rancher/shepherd/clients/rancher"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
-	v1 "k8s.io/api/core/v1"
+	"github.com/rancher/shepherd/extensions/kubeconfig"
+	extunstructured "github.com/rancher/shepherd/extensions/unstructured"
+	namegen "github.com/rancher/shepherd/pkg/namegenerator"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
-type ServiceAccountSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
-}
+// TestSingleSecretForServiceAccount tests that concurrent calls to EnsureSecretForServiceAccount for
+// the same service account leave exactly one token Secret. Each call races to create a Secret and
+// annotate the service account with it; the losers must roll back the Secret they created.
+func (s *ServiceAccountTestSuite) TestSingleSecretForServiceAccount() {
+	client := s.newSubSession()
 
-func (s *ServiceAccountSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *ServiceAccountSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
+	// EnsureSecretForServiceAccount runs in this test process, not in Rancher, and takes typed
+	// client-go interfaces, so build a clientset for the cluster.
+	kubeConfig, err := kubeconfig.GetKubeconfig(client, s.clusterID)
 	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *ServiceAccountSuite) TestSingleSecretForServiceAccount() {
-	localCluster, err := s.client.Management.Cluster.ByID("local")
+	restConfig, err := (*kubeConfig).ClientConfig()
 	s.Require().NoError(err)
-	s.Require().NotEmpty(localCluster)
-	localClusterKubeconfig, err := s.client.Management.Cluster.ActionGenerateKubeconfig(localCluster)
-	s.Require().NoError(err)
-	c, err := clientcmd.NewClientConfigFromBytes([]byte(localClusterKubeconfig.Config))
-	s.Require().NoError(err)
-	cc, err := c.ClientConfig()
-	s.Require().NoError(err)
-	clientset, err := kubernetes.NewForConfig(cc)
+	clientset, err := kubernetes.NewForConfig(restConfig)
 	s.Require().NoError(err)
 
-	testNS := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-ns",
-		},
-	}
-	testNS, err = clientset.CoreV1().Namespaces().Create(context.Background(), testNS, metav1.CreateOptions{})
+	// The clientset isn't tracked by the session, so create the namespace through the session's
+	// dynamic client instead. Deleting it also removes the service account and Secrets inside it.
+	dynamicClient, err := client.GetDownStreamClusterClient(s.clusterID)
+	s.Require().NoError(err)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namegen.AppendRandomString("test-ns-")}}
+	_, err = dynamicClient.Resource(corev1.SchemeGroupVersion.WithResource("namespaces")).Namespace("").Create(context.Background(), extunstructured.MustToUnstructured(ns), metav1.CreateOptions{})
 	s.Require().NoError(err)
 
-	serviceAccount := &v1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test",
-			Namespace: testNS.Name,
-		},
-	}
-	serviceAccount, err = clientset.CoreV1().ServiceAccounts(testNS.Name).Create(context.Background(), serviceAccount, metav1.CreateOptions{})
+	serviceAccount, err := clientset.CoreV1().ServiceAccounts(ns.Name).Create(context.Background(), &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: ns.Name},
+	}, metav1.CreateOptions{})
 	s.Require().NoError(err)
 
-	// mimic a scenario where multiple func calls for the same SA, and check the resulting Secrets
+	// Require can't be called from a goroutine, so record each call's error and check them once all
+	// calls have returned.
+	errs := make([]error, 10)
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := serviceaccounttoken.EnsureSecretForServiceAccount(context.Background(), nil, clientset.CoreV1(), clientset.CoreV1(), serviceAccount.DeepCopy())
-			s.Require().NoError(err)
-		}()
+	for i := range errs {
+		wg.Go(func() {
+			_, errs[i] = serviceaccounttoken.EnsureSecretForServiceAccount(context.Background(), nil, clientset.CoreV1(), clientset.CoreV1(), serviceAccount.DeepCopy())
+		})
 	}
 	wg.Wait()
+	for i, err := range errs {
+		s.Require().NoError(err, "EnsureSecretForServiceAccount call %d failed", i)
+	}
 
-	pollInterval := 500 * time.Millisecond
-	err = wait.Poll(pollInterval, 5*time.Second, func() (done bool, err error) {
-		secrets, err := clientset.CoreV1().Secrets(testNS.Name).List(context.Background(), metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		return len(secrets.Items) > 0, nil
+	// Every call has returned, including the losers' rollback deletes, so the result can be checked
+	// directly without polling.
+	secrets, err := clientset.CoreV1().Secrets(ns.Name).List(context.Background(), metav1.ListOptions{
+		LabelSelector: serviceaccounttoken.ServiceAccountSecretLabel + "=" + serviceAccount.Name,
 	})
 	s.Require().NoError(err)
+	s.Require().Len(secrets.Items, 1, "expected exactly one token Secret for the service account")
 
-	secrets, err := clientset.CoreV1().Secrets(testNS.Name).List(context.Background(), metav1.ListOptions{})
+	// The remaining Secret must be the one the service account references, not an orphan.
+	serviceAccount, err = clientset.CoreV1().ServiceAccounts(ns.Name).Get(context.Background(), serviceAccount.Name, metav1.GetOptions{})
 	s.Require().NoError(err)
-	s.Assert().Equal(1, len(secrets.Items))
-}
-
-func TestSATestSuite(t *testing.T) {
-	suite.Run(t, new(ServiceAccountSuite))
+	s.Require().Equal(ns.Name+"/"+secrets.Items[0].Name, serviceAccount.Annotations[serviceaccounttoken.ServiceAccountSecretRefAnnotation])
 }

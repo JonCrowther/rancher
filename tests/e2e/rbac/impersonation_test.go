@@ -1,13 +1,11 @@
-package integration
+package rbac
 
 import (
 	"context"
 
 	extrbac "github.com/rancher/rancher/tests/e2e/actions/kubeapi/rbac"
-	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	extauthz "github.com/rancher/shepherd/extensions/kubeapi/authorization"
-	extunstructured "github.com/rancher/shepherd/extensions/unstructured"
 	"github.com/rancher/shepherd/pkg/api/scheme"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 	authzv1 "k8s.io/api/authorization/v1"
@@ -16,34 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// checkAccessAllowed performs a single SelfSubjectAccessReview and returns whether access is allowed.
-func checkAccessAllowed(client *rancher.Client, clusterID string, attr *authzv1.ResourceAttributes) (bool, error) {
-	dynamicClient, err := client.GetDownStreamClusterClient(clusterID)
-	if err != nil {
-		return false, err
-	}
-
-	ssar := &authzv1.SelfSubjectAccessReview{
-		Spec: authzv1.SelfSubjectAccessReviewSpec{
-			ResourceAttributes: attr,
-		},
-	}
-
-	ssarGVR := authzv1.SchemeGroupVersion.WithResource("selfsubjectaccessreviews")
-	resp, err := dynamicClient.Resource(ssarGVR).Create(context.TODO(), extunstructured.MustToUnstructured(ssar), metav1.CreateOptions{})
-	if err != nil {
-		return false, err
-	}
-
-	result := &authzv1.SelfSubjectAccessReview{}
-	if err := scheme.Scheme.Convert(resp, result, resp.GroupVersionKind()); err != nil {
-		return false, err
-	}
-
-	return result.Status.Allowed, nil
-}
-
-func (p *RTBTestSuite) TestImpersonationByClusterRole() {
+// TestImpersonationByClusterRole tests that the cluster-owner role grants impersonation and
+// cluster-member does not, and that a ClusterRole can grant impersonation of one specific user.
+func (p *RBACTestSuite) TestImpersonationByClusterRole() {
 	client := p.newSubSession()
 
 	// Create user1 with standard "user" role.
@@ -83,6 +56,16 @@ func (p *RTBTestSuite) TestImpersonationByClusterRole() {
 	err = extauthz.WaitForAllowed(client, p.downstreamClusterID, []*authzv1.ResourceAttributes{impersonateAttr})
 	p.Require().NoError(err)
 
+	// Wait until user1's cluster-member binding is in effect (it grants listing nodes), so the
+	// denial below is caused by the role and not by the binding still propagating.
+	err = extauthz.WaitForAllowed(user1Client, p.downstreamClusterID, []*authzv1.ResourceAttributes{
+		{
+			Verb:     "list",
+			Resource: "nodes",
+		},
+	})
+	p.Require().NoError(err)
+
 	// User1 is a cluster-member which does not grant impersonate.
 	allowed, err := checkAccessAllowed(user1Client, p.downstreamClusterID, impersonateAttr)
 	p.Require().NoError(err)
@@ -115,12 +98,9 @@ func (p *RTBTestSuite) TestImpersonationByClusterRole() {
 	err = scheme.Scheme.Convert(impRole, &cr, nil)
 	p.Require().NoError(err)
 
+	// Created through the sub-session's dynamic client, so the session deletes it.
 	_, err = crResource.Create(context.TODO(), &cr, metav1.CreateOptions{})
 	p.Require().NoError(err)
-	p.T().Cleanup(func() {
-		err := crResource.Delete(context.TODO(), impRoleName, metav1.DeleteOptions{})
-		p.Require().NoError(err)
-	})
 
 	// Create a ClusterRoleBinding binding user1 to the impersonation role.
 	impBindingName := namegen.AppendRandomString("limited-impersonator-binding-")
@@ -146,10 +126,6 @@ func (p *RTBTestSuite) TestImpersonationByClusterRole() {
 
 	_, err = crbResource.Create(context.TODO(), &crb, metav1.CreateOptions{})
 	p.Require().NoError(err)
-	p.T().Cleanup(func() {
-		err := crbResource.Delete(context.TODO(), impBindingName, metav1.DeleteOptions{})
-		p.Require().NoError(err)
-	})
 
 	// User1 should now be able to impersonate user2 specifically.
 	err = extauthz.WaitForAllowed(user1Client, p.downstreamClusterID, []*authzv1.ResourceAttributes{

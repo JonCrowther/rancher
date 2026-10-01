@@ -1,112 +1,88 @@
-package integration
+package tokens
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"testing"
+	"strings"
 	"time"
 
-	rancherClient "github.com/rancher/shepherd/clients/rancher"
+	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
+	stevev1 "github.com/rancher/shepherd/clients/rancher/v1"
+	"github.com/stretchr/testify/assert"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
 
-type TokensTestSuite struct {
-	suite.Suite
-	client  *rancherClient.Client
-	session *session.Session
-}
-
-func (s *TokensTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancherClient.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *TokensTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
-func (s *TokensTestSuite) httpClient() *http.Client {
-	httpClient, err := rest.HTTPClientFor(s.client.WranglerContext.RESTConfig)
-	s.Require().NoError(err)
-	return httpClient
-}
-
-// insecureHTTPClient returns an unauthenticated HTTP client that skips TLS
-// verification, for use with public (unauthenticated) endpoints.
-func (s *TokensTestSuite) insecureHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-}
-
 // TestCurrentToken verifies that listing tokens returns exactly one token
-// marked as current, and that its userId matches the admin user.
+// marked as current: the token the client authenticates with, owned by the
+// client's user.
 func (s *TokensTestSuite) TestCurrentToken() {
-	tokens, err := s.client.Management.Token.ListAll(nil)
+	client := s.newSubSession()
+
+	// Rancher never marks a derived token (e.g. an API key) as current, and the config's admin
+	// token may be one, so log in as a new user to get a session token.
+	user := s.createStandardUser(client)
+	userClient, err := client.AsUser(user)
 	s.Require().NoError(err)
 
-	// Find the current user's ID from the admin token itself.
-	adminToken := s.client.WranglerContext.RESTConfig.BearerToken
-	var adminUserID string
-	for _, t := range tokens.Data {
-		if t.Token == adminToken || t.Current {
-			adminUserID = t.UserID
-			break
-		}
-	}
-	s.Require().NotEmpty(adminUserID, "no current token found for admin user")
+	// A bearer token is "<token name>:<secret>".
+	tokenName, _, found := strings.Cut(userClient.WranglerContext.RESTConfig.BearerToken, ":")
+	s.Require().True(found, "bearer token is not in <name>:<secret> form")
 
-	currentCount := 0
+	tokens, err := userClient.Management.Token.ListAll(nil)
+	s.Require().NoError(err)
+	var current []management.Token
 	for _, t := range tokens.Data {
 		if t.Current {
-			s.Equal(adminUserID, t.UserID)
-			currentCount++
+			current = append(current, t)
 		}
 	}
-	s.Equal(1, currentCount)
+	s.Require().Len(current, 1, "expected exactly one current token")
+	s.Equal(tokenName, current[0].ID)
+	s.Equal(user.ID, current[0].UserID)
 }
 
-// TestWebsocket verifies that requests with websocket-like upgrade headers are
-// rejected with 403 Forbidden.
+// TestWebsocket verifies that requests with websocket-like upgrade headers and a
+// foreign Origin are rejected with 403 Forbidden.
 func (s *TokensTestSuite) TestWebsocket() {
-	host := s.client.WranglerContext.RESTConfig.Host
-	httpClient := s.httpClient()
+	client := s.newSubSession()
 
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v3/clusters", host), nil)
+	httpClient, err := rest.HTTPClientFor(client.WranglerContext.RESTConfig)
 	s.Require().NoError(err)
-	req.Header.Set("Connection", "upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Origin", "badStuff")
-	req.Header.Set("User-Agent", "Mozilla")
+	getClusters := func(headers map[string]string) int {
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v3/clusters", client.WranglerContext.RESTConfig.Host), nil)
+		s.Require().NoError(err)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := httpClient.Do(req)
+		s.Require().NoError(err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
 
-	resp, err := httpClient.Do(req)
-	s.Require().NoError(err)
-	io.ReadAll(resp.Body) //nolint:errcheck
-	resp.Body.Close()
-	s.Equal(http.StatusForbidden, resp.StatusCode)
+	// The same request without the websocket headers succeeds, so the 403 below is caused by
+	// those headers and not by the URL or credentials.
+	s.Require().Equal(http.StatusOK, getClusters(nil))
+
+	s.Equal(http.StatusForbidden, getClusters(map[string]string{
+		"Connection": "upgrade",
+		"Upgrade":    "websocket",
+		"Origin":     "badStuff",
+		"User-Agent": "Mozilla",
+	}))
 }
 
 // TestAPITokenTTL verifies that a token created with ttl=0 is capped to the
 // max TTL configured in the auth-token-max-ttl-minutes setting.
 func (s *TokensTestSuite) TestAPITokenTTL() {
-	subSession := s.session.NewSession()
-	s.T().Cleanup(subSession.Cleanup)
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+	client := s.newSubSession()
 
 	maxTTLSetting, err := client.Management.Setting.ByID("auth-token-max-ttl-minutes")
 	s.Require().NoError(err)
@@ -123,154 +99,125 @@ func (s *TokensTestSuite) TestAPITokenTTL() {
 	s.Equal(maxTTLMins, tokenTTLMins)
 }
 
-// TestKubeconfigTokenTTL verifies that kubeconfig tokens respect the
-// kubeconfig-default-token-ttl-minutes setting and expire correctly, for both
-// the /v3-public and /v1-public login endpoints.
+// TestKubeconfigTokenTTL verifies that logging in with responseType=kubeconfig,
+// through both the /v3-public and /v1-public endpoints, returns a new token with
+// the TTL from the kubeconfig-default-token-ttl-minutes setting, which works
+// until it expires.
 func (s *TokensTestSuite) TestKubeconfigTokenTTL() {
-	client := s.client
-	host := client.RancherConfig.Host
-	adminPassword := client.RancherConfig.AdminPassword
-	httpClient := s.insecureHTTPClient()
+	client := s.newSubSession()
 
-	// Delete any existing kubeconfig token for this admin user.
-	adminTokens, err := client.Management.Token.ListAll(nil)
-	s.Require().NoError(err)
-	for i := range adminTokens.Data {
-		t := &adminTokens.Data[i]
-		if t.Current {
-			kubeconfigTokenName := "kubeconfig-" + t.UserID
-			existing, err := client.Management.Token.ByID(kubeconfigTokenName)
-			if err == nil && existing != nil {
-				_ = client.Management.Token.Delete(existing)
-			}
-			break
+	// Log in as a new user so the test doesn't depend on the config having an admin password.
+	user := s.createStandardUser(client)
+
+	// Set a short TTL (0.1 min = 6s): long enough to prove each token works before it expires.
+	// Read and write the setting through Steve, since Norman reports the default in place of an
+	// empty stored value and restoring that would pin the default.
+	const ttlSetting = "kubeconfig-default-token-ttl-minutes"
+	settings := client.Steve.SteveType("management.cattle.io.setting")
+	setTTL := func(value string) (string, error) {
+		existing, err := settings.ByID(ttlSetting)
+		if err != nil {
+			return "", err
 		}
+		var setting v3.Setting
+		if err := stevev1.ConvertToK8sType(existing.JSONResp, &setting); err != nil {
+			return "", err
+		}
+		previous := setting.Value
+		setting.Value = value
+		_, err = settings.Update(existing, setting)
+		return previous, err
+	}
+	origTTL, err := setTTL("0.1")
+	s.Require().NoError(err)
+	t := s.T()
+	t.Cleanup(func() {
+		_, err := setTTL(origTTL)
+		assert.NoError(t, err, "failed to restore setting %s to %q", ttlSetting, origTTL)
+	})
+
+	// The login endpoints are public, so use an unauthenticated client with the configured TLS settings.
+	httpClient, err := rest.HTTPClientFor(rest.AnonymousClientConfig(client.WranglerContext.RESTConfig))
+	s.Require().NoError(err)
+	host := client.WranglerContext.RESTConfig.Host
+
+	login := func(url string, body map[string]any) map[string]any {
+		reqBody, err := json.Marshal(body)
+		s.Require().NoError(err)
+		resp, err := httpClient.Post(url, "application/json", bytes.NewReader(reqBody))
+		s.Require().NoError(err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		s.Require().NoError(err)
+		s.Require().Equalf(http.StatusCreated, resp.StatusCode, "login failed: %s", respBody)
+		var result map[string]any
+		s.Require().NoError(json.Unmarshal(respBody, &result))
+		return result
+	}
+	getV3 := func(bearerToken string) (int, error) {
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v3", host), nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode, nil
 	}
 
-	// Save original setting values so they can be restored at the end.
-	origGenerateSetting, err := client.Management.Setting.ByID("kubeconfig-generate-token")
-	s.Require().NoError(err)
-	origTTLSetting, err := client.Management.Setting.ByID("kubeconfig-default-token-ttl-minutes")
-	s.Require().NoError(err)
-
-	s.T().Cleanup(func() {
-		_, _ = client.Management.Setting.Update(origGenerateSetting, &management.Setting{Value: origGenerateSetting.Value})
-		_, _ = client.Management.Setting.Update(origTTLSetting, &management.Setting{Value: origTTLSetting.Value})
-	})
-
-	// Disable kubeconfig token generation and set a very short TTL (0.01 min ≈ 600ms).
-	_, err = client.Management.Setting.Update(origGenerateSetting, &management.Setting{Value: "false"})
-	s.Require().NoError(err)
-	_, err = client.Management.Setting.Update(origTTLSetting, &management.Setting{Value: "0.01"})
-	s.Require().NoError(err)
-
-	// --- /v3-public endpoint ---
-	token1 := s.loginV3(httpClient, host, adminPassword)
-	s.NotEmpty(token1["token"])
-	s.NotEmpty(token1["expiresAt"])
-	s.NotEmpty(token1["id"])
-	s.True(fmt.Sprintf("%v", token1["token"]) != "" &&
-		len(fmt.Sprintf("%v", token1["token"])) > len(fmt.Sprintf("%v", token1["id"])))
-	s.Equal("token", token1["type"])
-	s.Equal("token", token1["baseType"])
-
-	// waitForTokenExpiry polls until the given bearer token is rejected with 401,
-	// confirming it has actually expired rather than relying on a fixed sleep.
-	waitForTokenExpiry := func(tokenValue string) {
-		s.Require().Eventually(func() bool {
-			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v3", host), nil)
-			if err != nil {
-				return false
-			}
-			req.Header.Set("Authorization", "Bearer "+tokenValue)
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				return false
-			}
-			io.ReadAll(resp.Body) //nolint:errcheck
-			resp.Body.Close()
-			return resp.StatusCode == http.StatusUnauthorized
-		}, 10*time.Second, 200*time.Millisecond, "timed out waiting for token to expire")
+	endpoints := []struct {
+		name string
+		url  string
+		body map[string]any
+	}{
+		{
+			name: "v3-public",
+			url:  fmt.Sprintf("https://%s/v3-public/localProviders/local?action=login", host),
+			body: map[string]any{"username": user.Username, "password": user.Password, "responseType": "kubeconfig"},
+		},
+		{
+			name: "v1-public",
+			url:  fmt.Sprintf("https://%s/v1-public/login", host),
+			body: map[string]any{"type": "localProvider", "username": user.Username, "password": user.Password, "responseType": "kubeconfig"},
+		},
 	}
+	for _, e := range endpoints {
+		s.Run(e.name, func() {
+			result := login(e.url, e.body)
 
-	// Wait for the token to expire.
-	waitForTokenExpiry(token1["token"].(string))
+			// Each kubeconfig login creates a new Token that the session doesn't know about.
+			tokenName, _ := result["id"].(string)
+			s.Require().NotEmpty(tokenName, "login response has no id")
+			t := s.T()
+			t.Cleanup(func() {
+				err := client.WranglerContext.Mgmt.Token().Delete(tokenName, &metav1.DeleteOptions{})
+				if !apierrors.IsNotFound(err) {
+					assert.NoError(t, err, "failed to delete token %s", tokenName)
+				}
+			})
 
-	// A new login should generate a different token.
-	token2 := s.loginV3(httpClient, host, adminPassword)
-	s.NotEmpty(token2["token"])
-	s.NotEmpty(token2["expiresAt"])
-	s.NotEqual(token1["token"], token2["token"])
+			bearerToken, _ := result["token"].(string)
+			s.True(strings.HasPrefix(bearerToken, tokenName+":"), "token %q should be <id>:<secret>", bearerToken)
+			s.NotEmpty(result["expiresAt"])
+			s.Equal("token", result["type"])
+			s.Equal("token", result["baseType"])
 
-	// Wait for token2 to expire before testing the v1 endpoint.
-	waitForTokenExpiry(token2["token"].(string))
+			token, err := client.WranglerContext.Mgmt.Token().Get(tokenName, metav1.GetOptions{})
+			s.Require().NoError(err)
+			s.Equal(int64(6000), token.TTLMillis, "token TTL should come from %s", ttlSetting)
 
-	// --- /v1-public endpoint ---
-	token3 := s.loginV1(httpClient, host, adminPassword)
-	s.NotEmpty(token3["token"])
-	s.NotEmpty(token3["expiresAt"])
-
-	// Wait for the token to expire.
-	waitForTokenExpiry(token3["token"].(string))
-
-	token4 := s.loginV1(httpClient, host, adminPassword)
-	s.NotEmpty(token4["token"])
-	s.NotEmpty(token4["expiresAt"])
-}
-
-// loginV3 calls the /v3-public login endpoint with responseType=kubeconfig.
-func (s *TokensTestSuite) loginV3(httpClient *http.Client, host, password string) map[string]any {
-	body, err := json.Marshal(map[string]any{
-		"username":     "admin",
-		"password":     password,
-		"responseType": "kubeconfig",
-	})
-	s.Require().NoError(err)
-
-	resp, err := httpClient.Post(
-		fmt.Sprintf("https://%s/v3-public/localProviders/local?action=login", host),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	s.Require().NoError(err)
-	respBody, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	s.Require().NoError(err)
-	s.Require().Truef(resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"unexpected status %d: %s", resp.StatusCode, string(respBody))
-
-	var result map[string]any
-	s.Require().NoError(json.Unmarshal(respBody, &result))
-	return result
-}
-
-// loginV1 calls the /v1-public/login endpoint with responseType=kubeconfig.
-func (s *TokensTestSuite) loginV1(httpClient *http.Client, host, password string) map[string]any {
-	body, err := json.Marshal(map[string]any{
-		"type":         "localProvider",
-		"username":     "admin",
-		"password":     password,
-		"responseType": "kubeconfig",
-	})
-	s.Require().NoError(err)
-
-	resp, err := httpClient.Post(
-		fmt.Sprintf("https://%s/v1-public/login", host),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	s.Require().NoError(err)
-	respBody, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	s.Require().NoError(err)
-	s.Require().Truef(resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"unexpected status %d: %s", resp.StatusCode, string(respBody))
-
-	var result map[string]any
-	s.Require().NoError(json.Unmarshal(respBody, &result))
-	return result
-}
-
-func TestTokens(t *testing.T) {
-	suite.Run(t, new(TokensTestSuite))
+			// The token works now, and is rejected once its TTL has passed.
+			status, err := getV3(bearerToken)
+			s.Require().NoError(err)
+			s.Require().Equal(http.StatusOK, status, "new token should authenticate before it expires")
+			s.EventuallyWithT(func(c *assert.CollectT) {
+				status, err := getV3(bearerToken)
+				assert.NoError(c, err)
+				assert.Equal(c, http.StatusUnauthorized, status)
+			}, 30*time.Second, 500*time.Millisecond, "token should be rejected after it expires")
+		})
+	}
 }

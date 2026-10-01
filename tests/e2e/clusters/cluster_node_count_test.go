@@ -1,15 +1,11 @@
-package integration
+package clusters
 
 import (
 	"context"
-	"testing"
 	"time"
 
-	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
-	"github.com/rancher/shepherd/pkg/session"
-	"github.com/stretchr/testify/suite"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,33 +18,10 @@ var (
 	namespaceGVR      = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
 )
 
-type ClusterNodeCountTestSuite struct {
-	suite.Suite
-	client  *rancher.Client
-	session *session.Session
-}
-
-func (s *ClusterNodeCountTestSuite) SetupSuite() {
-	testSession := session.NewSession()
-	s.session = testSession
-
-	client, err := rancher.NewClient("", testSession)
-	s.Require().NoError(err)
-	s.client = client
-}
-
-func (s *ClusterNodeCountTestSuite) TearDownSuite() {
-	s.session.Cleanup()
-}
-
 // TestClusterNodeCount asserts that the cluster node count is updated as
 // management nodes are added and removed.
-func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
-	subSession := s.session.NewSession()
-	defer subSession.Cleanup()
-
-	client, err := s.client.WithSession(subSession)
-	s.Require().NoError(err)
+func (s *ClustersTestSuite) TestClusterNodeCount() {
+	client := s.newSubSession()
 
 	cluster, err := client.Management.Cluster.Create(&management.Cluster{
 		Name: namegen.AppendRandomString("cluster-"),
@@ -64,7 +37,7 @@ func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
 	}, 30*time.Second, 2*time.Second, "cluster %s node count did not reach 0", cluster.ID)
 
 	// Wait for the cluster's management namespace to be created on the local cluster.
-	localDynamic, err := s.client.GetDownStreamClusterClient("local")
+	localDynamic, err := client.GetDownStreamClusterClient(s.clusterID)
 	s.Require().NoError(err)
 
 	err = wait.PollUntilContextTimeout(s.T().Context(), 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
@@ -88,11 +61,8 @@ func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
 			},
 		},
 	}
-	node1, err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Create(context.TODO(), node1, metav1.CreateOptions{})
+	_, err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Create(s.T().Context(), node1, metav1.CreateOptions{})
 	s.Require().NoError(err)
-	s.T().Cleanup(func() {
-		_ = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Delete(context.TODO(), node1.GetName(), metav1.DeleteOptions{})
-	})
 
 	s.Require().Eventually(func() bool {
 		c, err := client.Management.Cluster.ByID(cluster.ID)
@@ -112,11 +82,8 @@ func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
 			},
 		},
 	}
-	node2, err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Create(context.TODO(), node2, metav1.CreateOptions{})
+	node2, err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Create(s.T().Context(), node2, metav1.CreateOptions{})
 	s.Require().NoError(err)
-	s.T().Cleanup(func() {
-		_ = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Delete(context.TODO(), node2.GetName(), metav1.DeleteOptions{})
-	})
 
 	s.Require().Eventually(func() bool {
 		c, err := client.Management.Cluster.ByID(cluster.ID)
@@ -127,7 +94,7 @@ func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
 	}, 30*time.Second, 2*time.Second, "cluster %s node count did not reach 2", cluster.ID)
 
 	// Delete node2 and verify the count drops back to 1.
-	err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Delete(context.TODO(), node2.GetName(), metav1.DeleteOptions{})
+	err = localDynamic.Resource(managementNodeGVR).Namespace(cluster.ID).Delete(s.T().Context(), node2.GetName(), metav1.DeleteOptions{})
 	s.Require().NoError(err)
 
 	s.Require().Eventually(func() bool {
@@ -137,8 +104,4 @@ func (s *ClusterNodeCountTestSuite) TestClusterNodeCount() {
 		}
 		return c.NodeCount == 1
 	}, 30*time.Second, 2*time.Second, "cluster %s node count did not drop back to 1 after node deletion", cluster.ID)
-}
-
-func TestClusterNodeCount(t *testing.T) {
-	suite.Run(t, new(ClusterNodeCountTestSuite))
 }

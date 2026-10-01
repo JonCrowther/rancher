@@ -1,6 +1,6 @@
 # `auth_configs_test.go` Summary
 
-Verifies that the expected set of authentication configuration types are available and properly secured via the API.
+Verifies the set of supported authentication config types, the actions each type exposes, their protection from deletion, and the secret lifecycle for a SAML-based provider.
 
 ## `TestAuthConfigsExistAndCannotBeDeleted`
 **Act:** Lists all auth configs from the API and attempts to delete each one.

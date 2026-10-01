@@ -109,13 +109,13 @@ export CATTLE_TEST_CONFIG=$(pwd)/tests/e2e/config.yaml
 go test -v -timeout 30m -failfast -p 1 ./tests/e2e/...
 
 # Run a specific test suite
-go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/
+go test -v -count=1 -timeout 30m -run TestChartsTestSuite ./tests/e2e/catalogv2/charts/
 
 # Run a specific test within a suite
-go test -v -count=1 -run TestRTBTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
+go test -v -count=1 -run TestRBACTestSuite/TestUserVsUserBaseGlobalRoleVisibility ./tests/e2e/rbac/
 
-# Run Steve API tests (local cluster only — no downstream cluster needed)
-go test -v -count=1 -run TestSteveLocal ./tests/e2e/steveapi/
+# Run the Steve API secrets tests (local cluster only — no downstream cluster needed)
+go test -v -count=1 -run TestSecretsTestSuite ./tests/e2e/steveapi/secrets/
 ```
 
 ### Common `go test` Flags
@@ -141,7 +141,6 @@ The test config file is read from the path in `CATTLE_TEST_CONFIG`. A minimal ex
 rancher:
   adminToken: "token-xxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
   host: "192.168.1.100"        # Rancher host (no https://, no trailing slash)
-  clusterName: "my-k3d-cluster" # name of the imported downstream cluster in Rancher
   insecure: true
   cleanup: true
 ```
@@ -152,7 +151,7 @@ All supported fields:
 |---|---|---|---|
 | `rancher.adminToken` | string | Bearer token for admin API access. Obtain from Rancher UI: User Icon → Account & API Keys → Create API Key (No Scope). | Yes |
 | `rancher.host` | string | Rancher server hostname or IP (no scheme, no trailing slash). | Yes |
-| `rancher.clusterName` | string | Name of the downstream cluster in Rancher. Required for downstream tests; use `local` to target the local cluster only. | Yes |
+| `rancher.clusterName` | string | Written by the setup binary with the name of the k3d cluster it imports. Not read by any test: suites target `local`, and the downstream tests find a ready downstream cluster themselves. | No |
 | `rancher.insecure` | bool | Skip TLS verification. Useful for self-signed certs. Default: `false`. | No |
 | `rancher.cleanup` | bool | Whether tests should delete the resources they create. Default: `true`. | No |
 | `rancher.adminPassword` | string | Admin password (alternative to `adminToken`). | No |
@@ -173,7 +172,9 @@ All supported fields:
 ## Test Suites
 
 Tests that only use the `local` cluster do **not** require a downstream cluster and can be run with just a basic
-`config.yaml`. Tests marked "downstream required" need an imported cluster referenced by `rancher.clusterName`.
+`config.yaml`. Tests marked "downstream required" need an imported downstream cluster that is `active` and `Ready`; they
+find it by listing the management clusters and using the first one that isn't `local`, so with more than one downstream
+cluster you can't choose which is used.
 
 Every test file has a companion `*_test_summary.md` describing what it covers. They're aggregated into
 [`test-summary.md`](./test-summary.md) — regenerate it with `go generate ./tests/e2e` after adding or editing a summary.
@@ -188,12 +189,14 @@ Every test file has a companion `*_test_summary.md` describing what it covers. T
 | `clusters/` | `TestK8sProxy` | K8s API proxy through Rancher | Yes |
 | `projects/` | `TestResourceQuotaTestSuite` | Namespace resource quotas | No |
 | `projects/` | `TestProjectUserTestSuite` | Project-level user access | No |
-| `rbac/` | `TestRTBTestSuite` | Role/ClusterRole template bindings, features, impersonation, projects | No (uses `local`) |
+| `rbac/` | `TestRBACTestSuite` | Role template bindings, global roles/bindings, default roles, projects & quotas, impersonation, features | No (uses `local`) |
 | `steveapi/` | `TestSteveLocal` | Steve resource listing API (local cluster) | No |
 | `steveapi/` | `TestSteveDownstream` | Steve API on downstream cluster | Yes (currently skipped) |
 | `users/` | `TestUserTestSuite` | User CRUD operations | No |
 | `authconfigs/` | `TestAuthConfig` | Auth configuration management | No |
-| `serviceaccount/` | `TestSATestSuite` | Service account token handling | No |
+| `serviceaccount/` | `TestServiceAccountTestSuite` | Service account token handling (concurrent token Secret creation) | No (uses `local`) |
+| `tokens/` | `TestTokensTestSuite` | Current token, websocket origin check, API token max TTL, kubeconfig login token TTL and expiry | No |
+| `workloads/` | `TestWorkloadsTestSuite` | Norman project API: workloads (ports, registry credentials, probes, StatefulSet subPath validation, redeploy, rollback permissions), dnsRecords, ingresses, project and namespaced secrets, HPAs | No (uses `local`) |
 
 ---
 

@@ -1,6 +1,6 @@
 # `global_roles_test.go` Summary
 
-Verifies access control on global roles, global role bindings, and the visibility differences between the "user" and "user-base" global roles.
+Verifies visibility differences between the "user" and "user-base" global roles, and access control around creating, updating, and deleting GlobalRoles (including builtin ones).
 
 ## `TestUserVsUserBaseGlobalRoleVisibility`
 **Arrange:**
@@ -27,18 +27,6 @@ Verifies access control on global roles, global role bindings, and the visibilit
 - Checks the users with "user", "clusters-create", and "kontainerdrivers-manage" roles each see 3 kontainer drivers.
 - Checks the user with the "settings-manage" role sees 0 kontainer drivers.
 
-## `TestBuiltinGlobalRoleOnlyNewUserDefaultEditable`
-**Arrange:**
-- Retrieves the builtin "admin" GlobalRole, confirming it is builtin, has no "remove" link, and `newUserDefault` is false.
-
-**Act:** Updates the "admin" GlobalRole, attempting to change `name`, `description`, `rules`, `newUserDefault`, and `builtin` simultaneously.
-
-**Assert:**
-- Checks `name` remains unchanged.
-- Checks `rules` are not wiped out.
-- Checks `builtin` remains true.
-- Checks only `newUserDefault` changes, becoming true.
-
 ## `TestOnlyAdminCanCRUDGlobalRoles`
 **Arrange:**
 - Creates a standard user with the "user" global role.
@@ -51,53 +39,26 @@ Verifies access control on global roles, global role bindings, and the visibilit
 - Checks the standard user sees no GlobalRoles when listing.
 - Checks the standard user receives 403 Forbidden when attempting to delete a GlobalRole.
 
+## `TestBuiltinGlobalRoleOnlyNewUserDefaultEditable`
+**Arrange:**
+- Retrieves the builtin "kontainerdrivers-manage" GlobalRole, confirming it is builtin, has no "remove" link, and `newUserDefault` is false.
+
+**Act:** Updates the "kontainerdrivers-manage" GlobalRole, attempting to change `name`, `description`, `rules`, `newUserDefault`, and `builtin` simultaneously.
+
+**Assert:**
+- Checks `name` remains unchanged.
+- Checks `rules` are not wiped out.
+- Checks `builtin` remains true.
+- Checks only `newUserDefault` changes, becoming true.
+
 ## `TestAdminCannotDeleteBuiltinGlobalRole`
 **Arrange:**
-- Retrieves the builtin "admin" GlobalRole, confirming it is builtin and has no "remove" link.
+- Retrieves the builtin "kontainerdrivers-manage" GlobalRole, confirming it is builtin and has no "remove" link.
 
-**Act:** Creates a GlobalRole with `builtin: true`, updates the builtin "admin" role, and attempts to delete the builtin "admin" role.
+**Act:** Creates a GlobalRole with `builtin: true`, updates the builtin "kontainerdrivers-manage" role, and attempts to delete it.
 
 **Assert:**
 - Checks the newly created GlobalRole ignores the `builtin: true` field (the created role is not builtin).
 - Checks the admin can update the builtin role without error.
 - Checks deleting the builtin role fails with 403 Forbidden.
 - Checks the error message contains "cannot delete builtin global roles".
-
-## `TestGRBCannotUpdateGlobalRoleID`
-**Arrange:**
-- Creates a user.
-- Creates a GlobalRoleBinding for the user with `globalRoleId` "nodedrivers-manage".
-
-**Act:** Attempts to update the GlobalRoleBinding's `globalRoleId` to "settings-manage".
-
-**Assert:**
-- Checks `globalRoleId` remains "nodedrivers-manage" after the update.
-
-## `TestGRBGlobalRoleMustExist`
-**Arrange:**
-- Creates a user.
-
-**Act:** Attempts to create a GlobalRoleBinding referencing a non-existent GlobalRole ("somefakerole").
-
-**Assert:**
-- Checks the creation fails with 404 Not Found.
-
-## `TestGRBCannotUpdateSubject`
-**Arrange:**
-- Creates two users (user1, user2).
-- Creates a GlobalRoleBinding binding user1 to "nodedrivers-manage".
-
-**Act:** Attempts to update the GlobalRoleBinding's `userId` to user2's ID, then attempts to set `groupPrincipalId`.
-
-**Assert:**
-- Checks `userId` remains user1's ID after attempting to change it to user2.
-- Checks `userId` remains user1's ID and `groupPrincipalId` stays empty after attempting to set `groupPrincipalId`.
-
-## `TestGRBTargetsUserOrGroup`
-**Arrange:**
-- Creates a user.
-
-**Act:** Attempts to create GlobalRoleBindings with both `userId` and `groupPrincipalId` set, and with neither set.
-
-**Assert:**
-- Checks both attempts fail with 422 Unprocessable Entity.

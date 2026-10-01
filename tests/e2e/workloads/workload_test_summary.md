@@ -1,6 +1,6 @@
 # `workload_test.go` Summary
 
-Verifies the Norman API for workloads and related resources, covering workload creation via Kubernetes and Norman APIs, port-kind handling, private-registry image-pull selection, probe/scheduler persistence, subPath validation, the redeploy and rollback actions, and HorizontalPodAutoscaler creation.
+Verifies the Norman API for workloads and related resources, covering workload creation via Kubernetes and Norman APIs, port-kind handling, private-registry image-pull selection, probe/scheduler persistence, subPath validation, and the redeploy and rollback actions.
 
 ## `TestDeploymentCreationKubectl`
 **Arrange:**
@@ -50,7 +50,7 @@ Verifies the Norman API for workloads and related resources, covering workload c
 
 **Act 3:** Updates the workload again to remove the port.
 **Assert 3:**
-- Checks the service's cluster IP is cleared back to empty/nil.
+- Checks the service's cluster IP is cleared back to empty.
 
 ## `TestWorkloadProbes`
 **Arrange:**
@@ -74,16 +74,14 @@ Verifies the Norman API for workloads and related resources, covering workload c
 
 ## `TestStatefulSetWorkloadVolumeMountSubpath`
 **Arrange:**
-- Creates a project.
-- Defines a shared StatefulSet config and persistentVolumeClaim volume used for every create/update attempt.
+- Creates a project and a namespace.
+- Creates a valid StatefulSet workload (1 replica, a persistentVolumeClaim volume, and a volumeMount with relative subPath "mysql"), which is reused as the target for the update attempts below.
 
-**Act:** Creates and updates a StatefulSet workload using a volumeMount subPath.
+**Act:** Attempts to create and update StatefulSet workloads using an invalid volumeMount subPath, once absolute ("/mysql") and once containing ".." ("../mysql").
 
 **Assert:**
-- Checks creation with an absolute subPath ("/mysql") is rejected with HTTP 422.
-- Checks creation with a subPath containing ".." ("../mysql") is rejected with HTTP 422.
-- Checks creation with a valid relative subPath ("mysql") succeeds.
-- Checks updating the created workload with either invalid subPath is also rejected with HTTP 422.
+- Checks each invalid create is rejected with HTTP 422, with a message of "must be a relative path" for the absolute path and "must not contain '..'" for the ".." path.
+- Checks updating the existing workload with either invalid subPath is also rejected with HTTP 422 and the same respective message.
 
 ## `TestWorkloadRedeploy`
 **Arrange:**
@@ -93,7 +91,6 @@ Verifies the Norman API for workloads and related resources, covering workload c
 **Act:** Triggers the redeploy action on the workload.
 
 **Assert:**
-- Checks the redeploy action returns a 2xx status.
 - Checks the workload gains a `cattle.io/timestamp` annotation after redeploy.
 
 ## `TestWorkloadActionReadOnly`
@@ -108,14 +105,3 @@ Verifies the Norman API for workloads and related resources, covering workload c
 **Assert:**
 - Checks the read-only user receives HTTP 404.
 - Checks the project-member user succeeds with a 2xx status.
-
-## `TestHPA`
-**Arrange:**
-- Creates a project and a namespace.
-- Creates a workload with a CPU resource request.
-
-**Act:** Creates a HorizontalPodAutoscaler referencing the workload with maxReplicas 10 and 4 metric types (Resource-cpu at 50% utilization, Pods averageValue 50, External value 50, Object value 50).
-
-**Assert:**
-- Checks the HPA is created successfully with all 4 metrics.
-- Checks exactly one HPA appears in the list, with state "initializing".

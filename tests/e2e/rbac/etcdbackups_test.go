@@ -1,8 +1,6 @@
-package integration
+package rbac
 
 import (
-	"time"
-
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	extauthz "github.com/rancher/shepherd/extensions/kubeapi/authorization"
 	authzv1 "k8s.io/api/authorization/v1"
@@ -15,7 +13,7 @@ const (
 // TestBackupsManageRole asserts that binding a user to the "backups-manage"
 // ClusterRoleTemplate on the local cluster results in the user having access
 // to "etcdbackups" resources.
-func (p *RTBTestSuite) TestBackupsManageRole() {
+func (p *RBACTestSuite) TestBackupsManageRole() {
 	client := p.newSubSession()
 
 	restrictedUser := p.createUser(client, "restricted", "user-base")
@@ -46,7 +44,7 @@ func (p *RTBTestSuite) TestBackupsManageRole() {
 
 // TestStandardUsersCannotAccessBackups asserts that a user with only the
 // built-in "user" global role cannot access "etcdbackups" resources.
-func (p *RTBTestSuite) TestStandardUsersCannotAccessBackups() {
+func (p *RBACTestSuite) TestStandardUsersCannotAccessBackups() {
 	client := p.newSubSession()
 
 	standardUser := p.createUser(client, "standard-user", "user")
@@ -54,15 +52,23 @@ func (p *RTBTestSuite) TestStandardUsersCannotAccessBackups() {
 	standardClient, err := client.AsUser(standardUser)
 	p.Require().NoError(err)
 
-	// Wait long enough for any RBAC to sync, then assert denial.
-	p.Require().Eventually(func() bool {
-		allowed, err := checkAccessAllowed(standardClient, p.downstreamClusterID, &authzv1.ResourceAttributes{
-			Namespace: p.downstreamClusterID,
-			Verb:      "list",
-			Group:     "management.cattle.io",
-			Resource:  "etcdbackups",
-		})
-		// Keep retrying only on transport errors; a clean false result is our target.
-		return err == nil && !allowed
-	}, 2*time.Minute, 2*time.Second, "standard 'user' global role should not grant access to etcdbackups")
+	// Wait until the "user" global role's permissions are in effect (it grants creating secrets in
+	// cattle-global-data), so the denial below is caused by the role and not by RBAC still syncing.
+	err = extauthz.WaitForAllowed(standardClient, p.downstreamClusterID, []*authzv1.ResourceAttributes{
+		{
+			Namespace: "cattle-global-data",
+			Verb:      "create",
+			Resource:  "secrets",
+		},
+	})
+	p.Require().NoError(err)
+
+	allowed, err := checkAccessAllowed(standardClient, p.downstreamClusterID, &authzv1.ResourceAttributes{
+		Namespace: p.downstreamClusterID,
+		Verb:      "list",
+		Group:     "management.cattle.io",
+		Resource:  "etcdbackups",
+	})
+	p.Require().NoError(err)
+	p.Require().False(allowed, "standard 'user' global role should not grant access to etcdbackups")
 }

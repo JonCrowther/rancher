@@ -21,9 +21,9 @@ Verifies project-scoped secret resources in the Norman API, covering create/upda
 **Act:** Creates a project-scoped certificate with certificate and key PEM data.
 
 **Assert:**
-- Checks the certificate is created with `type` "certificate" and `expiresAt` set to a valid date.
-- Checks the certificate appears in the list and can be fetched by ID.
-- Checks it can be deleted.
+- Checks the certificate is created with `baseType` "secret", `type` "certificate", and `expiresAt` set to the certificate's expiry date.
+- Checks the certificate appears in the project's certificate list.
+- Checks it returns 404 after being deleted.
 
 ## `TestDockerCredential`
 **Arrange:**
@@ -78,4 +78,4 @@ Verifies project-scoped secret resources in the Norman API, covering create/upda
 **Act:** Creates a TLS secret with a malformed certificate directly via the Kubernetes API.
 
 **Assert:**
-- Checks the malformed secret can still be retrieved as a namespacedCertificate through the project API, returning a non-empty response.
+- Checks the malformed secret can still be retrieved as a namespacedCertificate through the project API, with matching `id` and `name`.

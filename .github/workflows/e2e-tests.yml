@@ -21,18 +21,23 @@ jobs:
         # Each shard gets its own runner and Rancher instance, which isolates the
         # packages that mutate global settings (catalogv2, tokens) instead of
         # relying on `-p >1` on a shared Rancher. Shards are balanced by runtime
-        # (catalogv2 is split across two). `run` selects suites; empty means all.
+        # (catalogv2's subpackages are split across two). `run` is an optional
+        # -run regex; empty means all tests in the listed packages.
         # `cpu` is 8 (not 16) because these jobs are wait-bound, not CPU-bound;
         # bump a shard back to 16 if it proves too slow.
         include:
           - shard: catalog-charts
             cpu: 8
-            packages: ./tests/e2e/catalogv2/...
-            run: 'TestRancherManagedChartsSuite|TestSystemChartsVersionSuite'
+            packages: >-
+              ./tests/e2e/catalogv2/managedcharts/...
+            run: ''
           - shard: catalog-repos
             cpu: 8
-            packages: ./tests/e2e/catalogv2/...
-            run: 'TestClusterRepoTestSuite|TestChartsTestSuite|TestUIPluginSuite'
+            packages: >-
+              ./tests/e2e/catalogv2/clusterrepo/...
+              ./tests/e2e/catalogv2/charts/...
+              ./tests/e2e/catalogv2/uiplugin/...
+            run: ''
           - shard: rbac-and-clusters
             cpu: 8
             packages: >-
@@ -43,8 +48,6 @@ jobs:
               ./tests/e2e/users/...
               ./tests/e2e/authconfigs/...
             run: ''
-          # tokens runs LAST in its shard: it disables global auth settings and
-          # only restores them in cleanup, so keep it after the other packages.
           - shard: workloads-and-steve
             cpu: 8
             packages: >-
